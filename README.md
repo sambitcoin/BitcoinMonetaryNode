@@ -11,5 +11,5 @@ From block 680,000 the node maintains two incremental UTXO set hashes (MuHash): 
 New nodes sync by full IBD, or from a monetary UTXO snapshot verified against a release-committed hash (the assumeutxo trust model), followed by mandatory background validation of the full chain.
 
 Contents
-BIP_DRAFT_Monetary_Nodes.md — the specification
+Monetary_Nodes.md — the specification
 index.html, technical.html — website (monetarynode.org)
