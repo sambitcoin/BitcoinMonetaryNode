@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Technical Details — Monetary Nodes</title>
+<meta name="description" content="The Monetary Node design explained in plain language: classification, storage, dual state roots, paired commitments, bootstrap, and the long-term plan.">
+<style>
+  :root {
+    --bg: #0d0e10;
+    --panel: #141518;
+    --ink: #e8e6e1;
+    --dim: #9a978f;
+    --accent: #f7931a;
+    --rule: #26272b;
+    --mono: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--ink); font-family: var(--mono); font-size: 15.5px; line-height: 1.7; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 1.25rem; }
+
+  nav { position: sticky; top: 0; z-index: 10; background: rgba(13,14,16,.92); backdrop-filter: blur(6px); border-bottom: 1px solid var(--rule); }
+  nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 3.25rem; max-width: 760px; }
+  .brand { font-weight: 700; color: var(--ink); }
+  .brand b { color: var(--accent); }
+  nav a.back { color: var(--dim); font-size: .82rem; }
+  nav a.back:hover { color: var(--ink); text-decoration: none; }
+
+  header { padding: 3.5rem 0 2.5rem; border-bottom: 1px solid var(--rule); }
+  h1 { font-size: 1.8rem; letter-spacing: -.02em; margin-bottom: .75rem; }
+  .lede { color: var(--dim); }
+
+  article { padding: 1rem 0 4rem; }
+  h2 { font-size: 1.15rem; color: var(--accent); margin: 2.75rem 0 .9rem; }
+  p { margin-bottom: 1rem; }
+  p strong { color: var(--ink); }
+  .dim { color: var(--dim); }
+  code { background: #1c1d21; padding: .1em .4em; font-size: .88em; }
+  .note { background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); padding: 1.1rem 1.2rem; margin: 1.25rem 0; font-size: .92rem; color: var(--dim); }
+  .note strong { color: var(--ink); }
+
+  footer { padding: 2rem 0 3rem; border-top: 1px solid var(--rule); color: var(--dim); font-size: .78rem; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <span class="brand">monetary<b>node</b></span>
+    <a class="back" href="index.html">← Back to overview</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <h1>Technical details, in plain language</h1>
+    <p class="lede">Everything below is also specified formally in the BIP draft. This page explains the same design without the RFC language.</p>
+  </div>
+</header>
+
+<article>
+  <div class="wrap">
+
+    <h2>1. What gets classified as spam</h2>
+    <p>Detection is purely mechanical — no external services, no indexers, no judgment calls. Three rules, applied to raw transaction data:</p>
+    <p><strong>Inscriptions.</strong> Ordinals hide data inside a script branch that provably never executes: a false value followed by <code>OP_IF ... OP_ENDIF</code>. Since the branch can never run, it has exactly one purpose — smuggling data. The rule catches any encoding of "false" (checked by script semantics, not byte matching), so trivial evasions don't work.</p>
+    <p><strong>Stamps.</strong> Bitcoin Stamps abuse bare multisig outputs by stuffing data where public keys should be. The rule catches keys that aren't valid points or match known data-encoding patterns.</p>
+    <p><strong>Token markers.</strong> <code>OP_RETURN</code> outputs carrying registered token-protocol identifiers (BRC-20 JSON, Runes markers), from a versioned list.</p>
+    <p class="dim">Any two implementations applying these rules to the same block must reach identical answers — that determinism is what makes everything downstream possible. Operators can add stricter local filters for relay, but those never affect the shared rules. Ordinary <code>OP_RETURN</code> up to 83 bytes is left alone: it's already provably unspendable and never enters the UTXO set.</p>
+
+    <h2>2. What is deleted, what is kept</h2>
+    <p>A Monetary Node validates every block completely — every signature, every amount, every rule, identical to Bitcoin Core. Then, as each block connects:</p>
+    <p><strong>Deleted:</strong> the content of spam outputs (the embedded data and its script) is removed from chainstate, the node's working database of spendable coins. This happens continuously, including during initial sync — spam never accumulates at any point in the node's life.</p>
+    <p><strong>Kept forever:</strong> every block header (which contains every block hash — about 70MB for the whole chain, same as any node); a compact filter index recording each deleted output's ID, amount, and location (~48 bytes instead of up to tens of kilobytes); and the two state fingerprints described next.</p>
+    <p><strong>Kept by default, prunable by choice:</strong> full block files, byte-identical to any archival node's. Filtering never touches blocks — only the working database.</p>
+
+    <h2>3. The two fingerprints, and why they're married</h2>
+    <p>Deleting spam creates two legitimate views of the ledger's state: the full view (what a legacy node holds) and the clean view (what a Monetary Node holds). From block 680,000 — which predates inscriptions — every Monetary Node computes a running cryptographic fingerprint of each: the <strong>legacy state root</strong> and the <strong>monetary state root</strong>, using the same incremental hashing (MuHash) that Bitcoin Core already ships.</p>
+    <p>A subtle point: the node maintains the legacy fingerprint <em>without storing the spam</em>. Each spam output is hashed into the legacy accumulator at validation time, an instant before deletion. The fingerprint of the full state survives even though the full state isn't kept — and it stays maintainable even in a future with no legacy nodes at all.</p>
+    <p>The two roots are then bound together with the block hash into a single <strong>paired commitment</strong>: <code>C = SHA256d(block hash ‖ legacy root ‖ monetary root)</code>. This marriage means no one can present a clean-state fingerprint that doesn't correspond to the real full state of the real chain — mix-and-match is detectable with one 32-byte comparison.</p>
+    <div class="note"><strong>Optional proof-of-work notarization.</strong> Miners can voluntarily embed the paired commitment in their coinbase (the same structural trick as SegWit's witness commitment — no rule change involved). Nodes never reject blocks over it, but wherever it appears, a miner has notarized the clean state under proof-of-work, creating a hardened audit trail that grows with adoption.</div>
+
+    <h2>4. Spending a deleted output</h2>
+    <p>Deleted outputs remain spendable — deletion is a storage decision, never a validity decision. When a block spends one, the node reconstructs the original output and validates the spend completely:</p>
+    <p>First choice: read it from local block files (the default, since blocks are kept). Fallback: request the old block from any peer using the standard <code>getdata</code> message that has existed since 2009, verify it against the block hash already sitting in the node's validated header chain, and extract the output. Fully trustless, no new infrastructure.</p>
+    <p class="dim">To keep block processing fast, nodes pre-fetch the needed data when they first see the spend in a transaction (before it's mined), and cap concurrent historical fetches per block so a malicious block full of ancient spam spends can only slow one node's local timing — never affect validity.</p>
+
+    <h2>5. How new nodes join</h2>
+    <p><strong>Default path — full sync.</strong> Download every block from any peer, validate everything, delete spam as you go, compute both fingerprints and the paired commitment at every height. Monetary Nodes that keep block files serve them exactly like archival nodes, so a network of mostly Monetary Nodes syncs its own newcomers. Along the way, a syncing node can compare its paired commitments against other monetary peers — a divergence exposes a bug or a liar, but peer values are advisory only and never override local computation.</p>
+    <p><strong>Fast path — snapshot.</strong> Modeled on Bitcoin Core's shipped <code>assumeutxo</code> feature, with the identical trust model. Each software release can commit to the hash of a clean-state snapshot at a checkpoint height — a hash anyone can independently recompute and audit, since the software is open source. A new node fetches the snapshot from any monetary peer, checks it against the release-committed hash (which includes the paired commitment, so a fabricated clean state can't masquerade as real), and is operational in minutes. Then, mandatorily, it downloads and fully validates the whole chain in the background — from monetary peers or any archival full node — and confirms the snapshot was honest. A bad snapshot cannot survive this. Until verification completes, the node doesn't serve snapshots to others.</p>
+
+    <h2>6. What happens to proof-of-work</h2>
+    <p>Nothing. There is one chain. Monetary Nodes accept every block a Core node accepts, follow the same most-work chain selection, and never reject a block for containing spam. The full hashrate of the network secures a Monetary Node exactly as much as it secures any other node. The two fingerprints are bookkeeping over the same chain — not competing chains.</p>
+
+    <h2>7. The distant future</h2>
+    <p>If legacy nodes asymptotically approach zero, two things must survive: the ability to validate spends of long-deleted outputs, and the ability of new nodes to sync from genesis. Both need full historical blocks. The design's answer: <strong>Monetary Nodes inherit the archival role.</strong> Block-file retention is the default configuration; pruning warns the operator of network-level consequences; the population of block-serving peers is monitored. The legacy fingerprint needs no legacy nodes at all — it's maintained by the monetary network itself, forever.</p>
+    <p class="dim">The end state: spam is preserved in the history books, because Bitcoin's history is immutable — but no working database anywhere carries it again.</p>
+
+    <h2>8. Known costs, stated honestly</h2>
+    <p><strong>Compact block relay:</strong> because spam never sits in a Monetary Node's mempool, relaying a spam-bearing block requires one extra round trip to fetch the missing transactions — tens of milliseconds, already borne by filtering nodes today.</p>
+    <p><strong>Miners follow fees:</strong> this proposal doesn't bind miners, and direct-to-miner submission bypasses relay filtering entirely. What it changes is what every sovereign node operator subsidizes with their own disk and bandwidth — and it makes the refusal costless. The friction on spam grows with adoption; it is attrition, not prohibition.</p>
+    <p><strong>Classification maintenance:</strong> the token-marker list is versioned and will need updates as protocols evolve. The inscription and stamp rules are structural and evasion-resistant by design.</p>
+
+    <h2>9. Implementation</h2>
+    <p>Reference implementation planned as a Bitcoin Knots patchset — Knots already ships the datacarrier limits and inscription filters this design extends. Changes touch policy, indexing, and peer services only; consensus code is untouched. A Bitcoin Core port is invited. Test vectors for classification and state fingerprints will be published alongside.</p>
+
+    <p style="margin-top:2.5rem"><a href="index.html">← Back to overview</a> · <a href="#">Full BIP draft</a> · <a href="https://groups.google.com/g/bitcoindev/c/Q6ulQb13okg">"The Cat" discussion</a></p>
+
+  </div>
+</article>
+
+<footer>
+  <div class="wrap">
+    Monetary Nodes · BIP draft · 2026 · BSD-2-Clause · Inspired by "The Cat" (Ostrom, 2025) · Built for Bitcoin Knots
+  </div>
+</footer>
+
+</body>
+</html>
