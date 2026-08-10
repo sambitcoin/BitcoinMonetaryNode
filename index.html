@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monetary Nodes — A Spam-Free Bitcoin. No Fork.</title>
+<meta name="description" content="A Bitcoin node policy that deletes spam from storage and relay while validating every consensus rule. The spam is deleted; the hashes are saved. No fork.">
+<style>
+  :root {
+    --bg: #0d0e10;
+    --panel: #141518;
+    --ink: #e8e6e1;
+    --dim: #9a978f;
+    --accent: #f7931a;
+    --green: #4caf7d;
+    --red: #d9534f;
+    --rule: #26272b;
+    --mono: "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--ink); font-family: var(--mono); font-size: 15.5px; line-height: 1.65; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 1.25rem; }
+
+  nav { position: sticky; top: 0; z-index: 10; background: rgba(13,14,16,.94); backdrop-filter: blur(8px); border-bottom: 1px solid var(--rule); }
+  nav .wrap { display: flex; align-items: center; justify-content: space-between; gap: 1.5rem; height: 3.4rem; }
+  .brand { font-weight: 700; color: var(--ink); letter-spacing: .02em; font-size: .95rem; white-space: nowrap; }
+  .brand b { color: var(--accent); }
+  nav ul { display: flex; align-items: center; gap: 1.35rem; list-style: none; font-size: .8rem; }
+  nav ul a { color: var(--dim); white-space: nowrap; }
+  nav ul a:hover { color: var(--ink); text-decoration: none; }
+  nav .sep { width: 1px; height: 15px; background: var(--rule); }
+  nav .ext a { color: var(--dim); opacity: .85; }
+  nav .ext a:hover { color: var(--accent); opacity: 1; }
+  @media (max-width: 780px) { nav ul { gap: 1rem; } nav .hide-m, nav .sep { display: none; } }
+
+  header { padding: 4.25rem 0 3.75rem; border-bottom: 1px solid var(--rule); }
+  .kicker { color: var(--accent); font-size: .8rem; letter-spacing: .18em; text-transform: uppercase; margin-bottom: 1.25rem; }
+  h1 { font-size: clamp(1.9rem, 5vw, 3rem); line-height: 1.15; letter-spacing: -.02em; margin-bottom: 1.25rem; }
+  h1 em { font-style: normal; color: var(--accent); }
+  .tagline { color: var(--accent); font-size: 1.05rem; margin-bottom: 1.1rem; letter-spacing: .01em; }
+  .tagline em { font-style: italic; }
+  .lede { color: var(--dim); font-size: 1.05rem; max-width: 640px; margin-bottom: 2rem; }
+  .lede strong { color: var(--ink); }
+  .cta { display: flex; gap: .9rem; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: .65rem 1.2rem; border: 1px solid var(--accent); font-size: .88rem; font-weight: 700; }
+  .btn.primary { background: var(--accent); color: #111; }
+  .btn.primary:hover { background: #ffa63a; text-decoration: none; }
+  .btn.ghost { color: var(--accent); }
+  .btn.ghost:hover { background: rgba(247,147,26,.08); text-decoration: none; }
+
+  section { padding: 3.5rem 0; border-bottom: 1px solid var(--rule); }
+  h2 { font-size: .85rem; text-transform: uppercase; letter-spacing: .16em; color: var(--accent); margin-bottom: 1.75rem; }
+  h3 { font-size: 1.05rem; margin-bottom: .5rem; }
+  p { margin-bottom: 1rem; }
+  .dim { color: var(--dim); }
+
+  .essence { background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); padding: 1.5rem 1.4rem; margin: 0 0 1rem; }
+  .essence b { font-size: 1.15rem; display: block; margin-bottom: .5rem; }
+  .essence p { color: var(--dim); font-size: .95rem; margin: 0; }
+
+  .numbers { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; margin-bottom: 1.75rem; }
+  .num { background: var(--panel); border: 1px solid var(--rule); padding: 1.4rem 1.2rem; }
+  .num b { display: block; font-size: 2rem; color: var(--accent); letter-spacing: -.02em; }
+  .num span { color: var(--dim); font-size: .82rem; }
+
+  .bars { background: var(--panel); border: 1px solid var(--rule); padding: 1.5rem 1.2rem; margin: 1.75rem 0 .5rem; }
+  .bar-row { margin-bottom: 1.1rem; }
+  .bar-row:last-child { margin-bottom: .25rem; }
+  .bar-label { display: flex; justify-content: space-between; font-size: .8rem; color: var(--dim); margin-bottom: .35rem; }
+  .bar-flex { display: flex; height: 14px; background: #1c1d21; overflow: hidden; }
+  .fill-money { background: var(--accent); }
+  .spam-part { background: repeating-linear-gradient(45deg, #5a3a1a, #5a3a1a 6px, #3c2a15 6px, #3c2a15 12px); }
+  .caption { font-size: .75rem; color: var(--dim); margin-top: .75rem; }
+
+  .steps { counter-reset: step; list-style: none; }
+  .steps li { counter-increment: step; position: relative; padding: 0 0 1.4rem 3.1rem; }
+  .steps li::before { content: counter(step, decimal-leading-zero); position: absolute; left: 0; top: .1rem; color: var(--accent); font-weight: 700; font-size: .95rem; }
+  .steps h3 { margin-bottom: .3rem; }
+  .steps p { color: var(--dim); margin-bottom: 0; font-size: .92rem; }
+  .steps code { color: var(--ink); background: #1c1d21; padding: .05em .35em; font-size: .88em; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+  @media (max-width: 680px) { .grid2 { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--rule); padding: 1.5rem 1.4rem; }
+  .card h3 { font-size: .85rem; text-transform: uppercase; letter-spacing: .14em; margin-bottom: 1rem; }
+  .card ul { list-style: none; }
+  .card li { padding: 0 0 .8rem 1.6rem; position: relative; font-size: .92rem; color: var(--dim); }
+  .card li strong { color: var(--ink); }
+  .card li::before { position: absolute; left: 0; font-weight: 700; }
+  .card.no h3 { color: var(--red); }
+  .card.no li::before { content: "✕"; color: var(--red); }
+  .card.yes h3 { color: var(--green); }
+  .card.yes li::before { content: "✓"; color: var(--green); }
+
+  .pull { border-left: 3px solid var(--accent); padding: .4rem 0 .4rem 1.4rem; font-size: 1.15rem; line-height: 1.5; max-width: 640px; margin: 0 0 .5rem; }
+
+  .biglinks { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1rem; }
+  .biglink { display: block; background: var(--panel); border: 1px solid var(--rule); padding: 1.2rem 1.2rem 1.1rem; color: var(--ink); }
+  .biglink:hover { border-color: var(--accent); text-decoration: none; }
+  .biglink b { display: block; margin-bottom: .25rem; }
+  .biglink span { color: var(--dim); font-size: .8rem; }
+  .biglink .arrow { color: var(--accent); }
+
+  footer { padding: 2.5rem 0 3.5rem; color: var(--dim); font-size: .78rem; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+
+  #technical .tech h2 { font-size: 1.15rem; color: var(--accent); text-transform: none; letter-spacing: 0; margin: 2.75rem 0 .9rem; }
+  #technical .tech p strong { color: var(--ink); }
+  #technical .tech code { background: #1c1d21; padding: .1em .4em; font-size: .88em; }
+  #technical .tech .note { background: var(--panel); border: 1px solid var(--rule); border-left: 3px solid var(--accent); padding: 1.1rem 1.2rem; margin: 1.25rem 0; font-size: .92rem; color: var(--dim); }
+  #technical .tech .note strong { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <span class="brand">monetary<b>node</b></span>
+    <ul>
+      <li class="hide-m"><a href="#problem">Problem</a></li>
+      <li class="hide-m"><a href="#growth">Trajectory</a></li>
+      <li class="hide-m"><a href="#how">How it works</a></li>
+      <li><a href="#technical">Technical</a></li>
+      <li class="sep" aria-hidden="true"></li>
+      <li class="ext"><a href="https://github.com/sampatneal/BitcoinMonetaryNode/blob/main/Monetary_Nodes.md" target="_blank" rel="noopener noreferrer">GitHub</a></li>
+      <li class="ext"><a href="https://x.com/marketanarchy21" target="_blank" rel="noopener noreferrer">X</a></li>
+    </ul>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <div class="kicker">BIP Draft · 2026 · No Fork Required</div>
+    <h1>Bitcoin is money.<br>Run a node that <em>treats it that way.</em></h1>
+    <p class="tagline">A <em>sly, roundabout way</em> of fighting spam.</p>
+    <p class="lede">A <strong>Monetary Node</strong> validates every consensus rule a full node does — and refuses to store or relay anything else. <strong>The spam is deleted; the hashes are saved.</strong> Half the chainstate. Zero consensus changes.</p>
+    <div class="cta">
+      <a class="btn primary" href="#technical">Read the technical details</a>
+      <a class="btn ghost" href="#how">How it works</a>
+    </div>
+  </div>
+</header>
+
+<section id="essence">
+  <div class="wrap">
+    <h2>The essence</h2>
+    <div class="essence">
+      <b>The spam is deleted; the hashes are saved.</b>
+      <p>A Monetary Node discards the content of spam outputs from its working database the moment each block is validated — while permanently keeping every block hash, a compact record of what was removed, and two cryptographic fingerprints of the ledger: one of the full state, one of the clean state, bound together so neither can be faked without the other. Full historical blocks remain available for the rare cases the deleted data is ever needed again. Same chain. Same rules. Same proof-of-work.</p>
+    </div>
+  </div>
+</section>
+
+<section id="problem">
+  <div class="wrap">
+    <h2>The problem</h2>
+    <div class="numbers">
+      <div class="num"><b>90M</b><span>UTXO entries accumulated 2009 → early 2023</span></div>
+      <div class="num"><b>173M+</b><span>UTXO entries today</span></div>
+      <div class="num"><b>40–50%</b><span>estimated spam — inscriptions, stamps, token dust</span></div>
+    </div>
+    <p class="dim">Every unspent output — including spam that will never be spent — must be held in the working database of every full node, forever. Inscriptions, stamps, and token protocols embed data in outputs that node operators must store, index, and verify while receiving nothing in return. The burden is permanent, compounding, and unbounded.</p>
+
+    <div class="bars">
+      <div class="bar-row">
+        <div class="bar-label"><span>Spam node chainstate (today)</span><span>~173M entries</span></div>
+        <div class="bar-flex"><i class="fill-money" style="width:55%"></i><i class="spam-part" style="width:45%"></i></div>
+      </div>
+      <div class="bar-row">
+        <div class="bar-label"><span>Monetary Node chainstate</span><span>~95M entries</span></div>
+        <div class="bar-flex"><i class="fill-money" style="width:55%"></i></div>
+      </div>
+      <div class="caption">Solid — monetary outputs. Hatched — data-embedding outputs a Monetary Node never stores. Gap widens every year spam persists.</div>
+    </div>
+  </div>
+</section>
+
+<section id="growth">
+  <div class="wrap">
+    <h2>The trajectory</h2>
+
+    <h3 style="margin-bottom:.75rem">UTXO set growth — and where it goes from here</h3>
+    <p class="dim" style="font-size:.9rem">Fourteen years to reach ~85 million entries. One year of inscriptions to nearly double it. Solid lines are history; dashed lines project the current trend.</p>
+    <div style="background:var(--panel);border:1px solid var(--rule);padding:1.25rem 1rem;margin:1rem 0 .5rem">
+      <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto" role="img" aria-label="UTXO set growth chart, spam node versus monetary node, 2021 to 2030">
+        <!-- grid -->
+        <g stroke="#26272b" stroke-width="1">
+          <line x1="60" y1="260" x2="680" y2="260"/>
+          <line x1="60" y1="214" x2="680" y2="214"/>
+          <line x1="60" y1="168" x2="680" y2="168"/>
+          <line x1="60" y1="122" x2="680" y2="122"/>
+          <line x1="60" y1="76"  x2="680" y2="76"/>
+          <line x1="60" y1="30"  x2="680" y2="30"/>
+        </g>
+        <!-- y labels -->
+        <g fill="#9a978f" font-size="11" font-family="monospace" text-anchor="end">
+          <text x="52" y="264">0</text>
+          <text x="52" y="218">50M</text>
+          <text x="52" y="172">100M</text>
+          <text x="52" y="126">150M</text>
+          <text x="52" y="80">200M</text>
+          <text x="52" y="34">250M</text>
+        </g>
+        <!-- x labels -->
+        <g fill="#9a978f" font-size="11" font-family="monospace" text-anchor="middle">
+          <text x="60" y="280">2021</text>
+          <text x="197.8" y="280">2023</text>
+          <text x="335.6" y="280">2025</text>
+          <text x="473.3" y="280">2027</text>
+          <text x="611.1" y="280">2029</text>
+        </g>
+        <!-- event markers -->
+        <line x1="60" y1="30" x2="60" y2="260" stroke="#f7931a" stroke-width="1" stroke-dasharray="3,4" opacity=".5"/>
+        <text x="66" y="44" fill="#f7931a" font-size="10.5" font-family="monospace">block 680,000</text>
+        <line x1="197.8" y1="30" x2="197.8" y2="260" stroke="#d9534f" stroke-width="1" stroke-dasharray="3,4" opacity=".55"/>
+        <text x="204" y="44" fill="#d9534f" font-size="10.5" font-family="monospace">inscriptions begin</text>
+        <!-- spam node: history -->
+        <polyline points="60,188.2 128.9,184.6 197.8,181.8 232.2,149.6 266.7,112.8 335.6,105.4 404.4,100.8"
+                  fill="none" stroke="#d9534f" stroke-width="2.5"/>
+        <!-- spam node: projection -->
+        <polyline points="404.4,100.8 473.3,89.8 542.2,78.8 611.1,66.8 680,54.8"
+                  fill="none" stroke="#d9534f" stroke-width="2.5" stroke-dasharray="6,5" opacity=".8"/>
+        <!-- monetary node: history -->
+        <polyline points="60,188.2 128.9,184.6 197.8,181.8 266.7,177.2 335.6,174.4 404.4,172.6"
+                  fill="none" stroke="#f7931a" stroke-width="2.5"/>
+        <!-- monetary node: projection -->
+        <polyline points="404.4,172.6 473.3,169.8 542.2,167.1 611.1,164.3 680,161.6"
+                  fill="none" stroke="#f7931a" stroke-width="2.5" stroke-dasharray="6,5" opacity=".8"/>
+        <!-- series labels -->
+        <text x="545" y="70" fill="#d9534f" font-size="12" font-family="monospace" font-weight="bold">spam node</text>
+        <text x="530" y="192" fill="#f7931a" font-size="12" font-family="monospace" font-weight="bold">monetary node</text>
+        <!-- today marker -->
+        <line x1="404.4" y1="30" x2="404.4" y2="260" stroke="#9a978f" stroke-width="1" stroke-dasharray="2,4" opacity=".4"/>
+        <text x="404.4" y="24" fill="#9a978f" font-size="10.5" font-family="monospace" text-anchor="middle">today</text>
+      </svg>
+    </div>
+    <p class="caption" style="margin-bottom:2.5rem">A monetary node tracks the same money the whole time — its growth is Bitcoin's actual economic activity. The gap between the lines is pure spam, and it compounds forever on every node that stores it.</p>
+
+    <h3 style="margin-bottom:.75rem">What that means for disk and memory</h3>
+    <p class="dim" style="font-size:.9rem">Chainstate (the working database every node must keep hot) roughly tripled since inscriptions began. Hatched bars are projections at the current trend.</p>
+    <div style="background:var(--panel);border:1px solid var(--rule);padding:1.25rem 1rem;margin:1rem 0 .5rem">
+      <svg viewBox="0 0 700 270" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto" role="img" aria-label="Chainstate size chart, spam node versus monetary node, past and projected">
+        <defs>
+          <pattern id="projhatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="7" height="7" fill="none"/>
+            <line x1="0" y1="0" x2="0" y2="7" stroke="#d9534f" stroke-width="3" opacity=".55"/>
+          </pattern>
+          <pattern id="projhatchm" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="7" height="7" fill="none"/>
+            <line x1="0" y1="0" x2="0" y2="7" stroke="#f7931a" stroke-width="3" opacity=".55"/>
+          </pattern>
+        </defs>
+        <!-- grid -->
+        <g stroke="#26272b" stroke-width="1">
+          <line x1="60" y1="220" x2="680" y2="220"/>
+          <line x1="60" y1="175" x2="680" y2="175"/>
+          <line x1="60" y1="130" x2="680" y2="130"/>
+          <line x1="60" y1="85"  x2="680" y2="85"/>
+          <line x1="60" y1="40"  x2="680" y2="40"/>
+        </g>
+        <g fill="#9a978f" font-size="11" font-family="monospace" text-anchor="end">
+          <text x="52" y="224">0</text>
+          <text x="52" y="179">5 GB</text>
+          <text x="52" y="134">10 GB</text>
+          <text x="52" y="89">15 GB</text>
+          <text x="52" y="44">20 GB</text>
+        </g>
+        <!-- groups: 2021, 2024, 2026, 2028p, 2030p -->
+        <!-- 2021: both 4GB -->
+        <rect x="66"  y="184" width="40" height="36" fill="#d9534f" opacity=".85"/>
+        <rect x="114" y="184" width="40" height="36" fill="#f7931a"/>
+        <!-- 2024: 11 / 6.5 -->
+        <rect x="191" y="121" width="40" height="99" fill="#d9534f" opacity=".85"/>
+        <rect x="239" y="161.5" width="40" height="58.5" fill="#f7931a"/>
+        <!-- 2026: 13 / 7 -->
+        <rect x="316" y="103" width="40" height="117" fill="#d9534f" opacity=".85"/>
+        <rect x="364" y="157" width="40" height="63" fill="#f7931a"/>
+        <!-- 2028 projected: 16 / 7.5 -->
+        <rect x="441" y="76" width="40" height="144" fill="url(#projhatch)" stroke="#d9534f" stroke-width="1.5"/>
+        <rect x="489" y="152.5" width="40" height="67.5" fill="url(#projhatchm)" stroke="#f7931a" stroke-width="1.5"/>
+        <!-- 2030 projected: 19 / 8 -->
+        <rect x="566" y="49" width="40" height="171" fill="url(#projhatch)" stroke="#d9534f" stroke-width="1.5"/>
+        <rect x="614" y="148" width="40" height="72" fill="url(#projhatchm)" stroke="#f7931a" stroke-width="1.5"/>
+        <!-- value labels -->
+        <g fill="#9a978f" font-size="10.5" font-family="monospace" text-anchor="middle">
+          <text x="86"  y="178">4</text><text x="134" y="178">4</text>
+          <text x="211" y="115">11</text><text x="259" y="155">6.5</text>
+          <text x="336" y="97">13</text><text x="384" y="151">7</text>
+          <text x="461" y="70">~16</text><text x="509" y="146">~7.5</text>
+          <text x="586" y="43">~19</text><text x="634" y="142">~8</text>
+        </g>
+        <!-- x labels -->
+        <g fill="#9a978f" font-size="11" font-family="monospace" text-anchor="middle">
+          <text x="110" y="240">2021</text>
+          <text x="235" y="240">2024</text>
+          <text x="360" y="240">2026</text>
+          <text x="485" y="240">2028*</text>
+          <text x="610" y="240">2030*</text>
+        </g>
+        <!-- legend -->
+        <g font-size="11" font-family="monospace">
+          <rect x="60" y="252" width="12" height="12" fill="#d9534f" opacity=".85"/>
+          <text x="78" y="262" fill="#9a978f">spam node chainstate</text>
+          <rect x="260" y="252" width="12" height="12" fill="#f7931a"/>
+          <text x="278" y="262" fill="#9a978f">monetary node chainstate</text>
+          <text x="500" y="262" fill="#9a978f">* projected at current trend</text>
+        </g>
+      </svg>
+    </div>
+    <p class="caption">The working database must stay fast — ideally in memory (<code style="background:#1c1d21;padding:.05em .35em">dbcache</code>). A monetary node's chainstate still fits comfortably in the RAM of a Raspberry-Pi-class machine at the end of the decade; a spam node's increasingly does not. That widening gap is the adoption mechanism: the cheapest fully validating node wins, and it is the one that deletes spam. Figures approximate; sources and assumptions in the BIP draft.</p>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="wrap">
+    <h2>One chain, two views</h2>
+    <p class="dim" style="font-size:.9rem">The monetary view grows out of the legacy blockchain, block by block. Every block is fully validated as mined — then spam is discarded before it ever touches the working database.</p>
+    <div style="background:var(--panel);border:1px solid var(--rule);padding:1.5rem 1rem 1.25rem;margin:1rem 0 .5rem">
+      <svg viewBox="0 0 700 415" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto" role="img" aria-label="Diagram: blocks containing money and spam; spam is discarded at validation; only money enters the monetary chainstate; each block produces a paired commitment of both state hashes">
+        <defs>
+          <pattern id="spamfill" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="6" height="6" fill="#2a1516"/>
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#d9534f" stroke-width="2.5" opacity=".8"/>
+          </pattern>
+          <marker id="arrO" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L8,4 L0,8 z" fill="#f7931a"/>
+          </marker>
+          <marker id="arrR" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L8,4 L0,8 z" fill="#d9534f"/>
+          </marker>
+          <marker id="arrG" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0,0 L8,4 L0,8 z" fill="#9a978f"/>
+          </marker>
+        </defs>
+
+        <!-- row label -->
+        <text x="40" y="22" fill="#9a978f" font-size="11.5" font-family="monospace">THE BLOCKCHAIN — blocks as mined, fully validated, unchanged</text>
+
+        <!-- blocks -->
+        <!-- block template: x, squares mix -->
+        <g font-family="monospace">
+          <!-- b1 x=40 -->
+          <text x="90" y="43" fill="#9a978f" font-size="10" text-anchor="middle">680,001</text>
+          <rect x="40" y="50" width="100" height="66" fill="#0d0e10" stroke="#3a3b40" stroke-width="1.5"/>
+          <rect x="52" y="60" width="18" height="18" fill="#f7931a"/><rect x="76" y="60" width="18" height="18" fill="#f7931a"/><rect x="100" y="60" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1"/>
+          <rect x="52" y="86" width="18" height="18" fill="#f7931a"/><rect x="76" y="86" width="18" height="18" fill="#f7931a"/><rect x="100" y="86" width="18" height="18" fill="#f7931a"/>
+          <!-- b2 x=170 -->
+          <text x="220" y="43" fill="#9a978f" font-size="10" text-anchor="middle">680,002</text>
+          <rect x="170" y="50" width="100" height="66" fill="#0d0e10" stroke="#3a3b40" stroke-width="1.5"/>
+          <rect x="182" y="60" width="18" height="18" fill="#f7931a"/><rect x="206" y="60" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1"/><rect x="230" y="60" width="18" height="18" fill="#f7931a"/>
+          <rect x="182" y="86" width="18" height="18" fill="#f7931a"/><rect x="206" y="86" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1"/><rect x="230" y="86" width="18" height="18" fill="#f7931a"/>
+          <!-- b3 x=300 -->
+          <text x="350" y="43" fill="#9a978f" font-size="10" text-anchor="middle">680,003</text>
+          <rect x="300" y="50" width="100" height="66" fill="#0d0e10" stroke="#3a3b40" stroke-width="1.5"/>
+          <rect x="312" y="60" width="18" height="18" fill="#f7931a"/><rect x="336" y="60" width="18" height="18" fill="#f7931a"/><rect x="360" y="60" width="18" height="18" fill="#f7931a"/>
+          <rect x="312" y="86" width="18" height="18" fill="#f7931a"/><rect x="336" y="86" width="18" height="18" fill="#f7931a"/><rect x="360" y="86" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1"/>
+          <!-- b4 x=430 -->
+          <text x="480" y="43" fill="#9a978f" font-size="10" text-anchor="middle">680,004</text>
+          <rect x="430" y="50" width="100" height="66" fill="#0d0e10" stroke="#3a3b40" stroke-width="1.5"/>
+          <rect x="442" y="60" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1"/><rect x="466" y="60" width="18" height="18" fill="#f7931a"/><rect x="490" y="60" width="18" height="18" fill="#f7931a"/>
+          <rect x="442" y="86" width="18" height="18" fill="#f7931a"/><rect x="466" y="86" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1"/><rect x="490" y="86" width="18" height="18" fill="#f7931a"/>
+          <!-- b5 x=560 -->
+          <text x="610" y="43" fill="#9a978f" font-size="10" text-anchor="middle">680,005</text>
+          <rect x="560" y="50" width="100" height="66" fill="#0d0e10" stroke="#3a3b40" stroke-width="1.5"/>
+          <rect x="572" y="60" width="18" height="18" fill="#f7931a"/><rect x="596" y="60" width="18" height="18" fill="#f7931a"/><rect x="620" y="60" width="18" height="18" fill="#f7931a"/>
+          <rect x="572" y="86" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1"/><rect x="596" y="86" width="18" height="18" fill="#f7931a"/><rect x="620" y="86" width="18" height="18" fill="#f7931a"/>
+        </g>
+        <!-- chain links -->
+        <g stroke="#9a978f" stroke-width="1.5">
+          <line x1="140" y1="83" x2="166" y2="83" marker-end="url(#arrG)"/>
+          <line x1="270" y1="83" x2="296" y2="83" marker-end="url(#arrG)"/>
+          <line x1="400" y1="83" x2="426" y2="83" marker-end="url(#arrG)"/>
+          <line x1="530" y1="83" x2="556" y2="83" marker-end="url(#arrG)"/>
+        </g>
+
+        <!-- discard arrows + deleted spam -->
+        <g>
+          <!-- per column: red dashed arrow from block bottom to trash square -->
+          <line x1="70" y1="116" x2="70" y2="150" stroke="#d9534f" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrR)"/>
+          <rect x="61" y="154" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1" opacity=".65"/>
+          <text x="70" y="168.5" fill="#d9534f" font-size="12" font-weight="bold" text-anchor="middle">✕</text>
+
+          <line x1="200" y1="116" x2="200" y2="150" stroke="#d9534f" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrR)"/>
+          <rect x="191" y="154" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1" opacity=".65"/>
+          <text x="200" y="168.5" fill="#d9534f" font-size="12" font-weight="bold" text-anchor="middle">✕</text>
+
+          <line x1="330" y1="116" x2="330" y2="150" stroke="#d9534f" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrR)"/>
+          <rect x="321" y="154" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1" opacity=".65"/>
+          <text x="330" y="168.5" fill="#d9534f" font-size="12" font-weight="bold" text-anchor="middle">✕</text>
+
+          <line x1="460" y1="116" x2="460" y2="150" stroke="#d9534f" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrR)"/>
+          <rect x="451" y="154" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1" opacity=".65"/>
+          <text x="460" y="168.5" fill="#d9534f" font-size="12" font-weight="bold" text-anchor="middle">✕</text>
+
+          <line x1="590" y1="116" x2="590" y2="150" stroke="#d9534f" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#arrR)"/>
+          <rect x="581" y="154" width="18" height="18" fill="url(#spamfill)" stroke="#d9534f" stroke-width="1" opacity=".65"/>
+          <text x="590" y="168.5" fill="#d9534f" font-size="12" font-weight="bold" text-anchor="middle">✕</text>
+        </g>
+        <text x="350" y="196" fill="#d9534f" font-size="10.5" font-family="monospace" text-anchor="middle">spam deleted at validation — hashed into the legacy root first, then discarded</text>
+
+        <!-- money arrows to chainstate -->
+        <g stroke="#f7931a" stroke-width="1.5">
+          <line x1="110" y1="116" x2="110" y2="216" marker-end="url(#arrO)"/>
+          <line x1="240" y1="116" x2="240" y2="216" marker-end="url(#arrO)"/>
+          <line x1="370" y1="116" x2="370" y2="216" marker-end="url(#arrO)"/>
+          <line x1="500" y1="116" x2="500" y2="216" marker-end="url(#arrO)"/>
+          <line x1="630" y1="116" x2="630" y2="216" marker-end="url(#arrO)"/>
+        </g>
+
+        <!-- monetary chainstate -->
+        <text x="40" y="238" fill="#9a978f" font-size="11.5" font-family="monospace">THE MONETARY VIEW — chainstate grows only with money</text>
+        <rect x="40" y="246" width="620" height="52" fill="#0d0e10" stroke="#f7931a" stroke-width="1.5"/>
+        <g>
+          <rect x="52" y="263" width="18" height="18" fill="#f7931a"/><rect x="78" y="263" width="18" height="18" fill="#f7931a"/><rect x="104" y="263" width="18" height="18" fill="#f7931a"/><rect x="130" y="263" width="18" height="18" fill="#f7931a"/><rect x="156" y="263" width="18" height="18" fill="#f7931a"/>
+          <rect x="182" y="263" width="18" height="18" fill="#f7931a"/><rect x="208" y="263" width="18" height="18" fill="#f7931a"/><rect x="234" y="263" width="18" height="18" fill="#f7931a"/><rect x="260" y="263" width="18" height="18" fill="#f7931a"/>
+          <rect x="286" y="263" width="18" height="18" fill="#f7931a"/><rect x="312" y="263" width="18" height="18" fill="#f7931a"/><rect x="338" y="263" width="18" height="18" fill="#f7931a"/><rect x="364" y="263" width="18" height="18" fill="#f7931a"/><rect x="390" y="263" width="18" height="18" fill="#f7931a"/>
+          <rect x="416" y="263" width="18" height="18" fill="#f7931a"/><rect x="442" y="263" width="18" height="18" fill="#f7931a"/><rect x="468" y="263" width="18" height="18" fill="#f7931a"/><rect x="494" y="263" width="18" height="18" fill="#f7931a"/>
+          <rect x="520" y="263" width="18" height="18" fill="#f7931a"/><rect x="546" y="263" width="18" height="18" fill="#f7931a"/><rect x="572" y="263" width="18" height="18" fill="#f7931a"/><rect x="598" y="263" width="18" height="18" fill="#f7931a"/><rect x="624" y="263" width="18" height="18" fill="#f7931a"/>
+        </g>
+
+        <!-- paired commitment -->
+        <g font-family="monospace" font-size="10.5">
+          <line x1="350" y1="298" x2="350" y2="322" stroke="#9a978f" stroke-width="1.5" marker-end="url(#arrG)"/>
+          <rect x="130" y="330" width="130" height="26" fill="#141518" stroke="#3a3b40"/>
+          <text x="195" y="347" fill="#9a978f" text-anchor="middle">legacy hash</text>
+          <rect x="290" y="330" width="130" height="26" fill="#141518" stroke="#3a3b40"/>
+          <text x="355" y="347" fill="#f7931a" text-anchor="middle">monetary hash</text>
+          <text x="275" y="347" fill="#9a978f" text-anchor="middle">+</text>
+          <text x="437" y="347" fill="#9a978f" text-anchor="middle">→</text>
+          <rect x="452" y="330" width="118" height="26" fill="#141518" stroke="#f7931a"/>
+          <text x="511" y="347" fill="#e8e6e1" text-anchor="middle">commitment C</text>
+          <text x="350" y="382" fill="#9a978f" text-anchor="middle" font-size="10">computed at every block · married to the block hash · tamper-evident, no fork</text>
+        </g>
+      </svg>
+    </div>
+    <p class="caption">Same blocks, same order, same proof-of-work — the top row is the blockchain as everyone sees it. A Monetary Node simply refuses to let the red squares into its working database, and fingerprints both views at every step so nothing can be misrepresented. Spends of deleted outputs remain fully valid: the original data is always recoverable from block files.</p>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li>
+        <h3>Full validation, filtered storage</h3>
+        <p>Every block is validated under unchanged consensus rules. Then spam outputs are deleted from the working database as each block connects — during initial sync and forever after. Chainstate is never dirtied in the first place. Detection is deterministic and syntactic; no external indexers.</p>
+      </li>
+      <li>
+        <h3>No spam relay</h3>
+        <p>Spam transactions never enter the mempool and are never relayed. Blocks always relay in full, byte-identical to any archival node. <code>OP_RETURN</code> stays capped at 83 bytes, as in Bitcoin Knots.</p>
+      </li>
+      <li>
+        <h3>Two fingerprints, married together</h3>
+        <p>From block 680,000, each node computes two state hashes per block — full state and clean state — bound with the block hash into a single paired commitment. Neither view can be faked or mismatched without detection. Miners can voluntarily notarize it under proof-of-work. No fork needed for any of it.</p>
+      </li>
+      <li>
+        <h3>Fast bootstrap, verified in the background</h3>
+        <p>New nodes can start from a snapshot verified against a hash committed in the software release (the same trust model as Bitcoin Core's <code>assumeutxo</code>) — then download and fully validate the entire chain in the background, from monetary peers or any full node. Eventually every node has checked everything itself.</p>
+      </li>
+      <li>
+        <h3>Everything stays spendable</h3>
+        <p>Spends of deleted outputs are fully validated by reconstructing the original from local block files, or fetching the old block over the existing P2P protocol and checking it against the block hash already validated. Nothing confiscated, nothing frozen, no new infrastructure assumed.</p>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section id="compare">
+  <div class="wrap">
+    <h2>What this is — and is not</h2>
+    <div class="grid2">
+      <div class="card no">
+        <h3>Not</h3>
+        <ul>
+          <li><strong>Not a fork.</strong> Hard or soft. No consensus rule changes, block hashes unchanged, one chain.</li>
+          <li><strong>Not confiscation.</strong> Every output valid today remains spendable. No coins frozen.</li>
+          <li><strong>Not coordination-dependent.</strong> Each operator adopts unilaterally and can revert at any time.</li>
+          <li><strong>Not censorship.</strong> Any miner may include any valid transaction; all blocks relay in full.</li>
+        </ul>
+      </div>
+      <div class="card yes">
+        <h3>You get</h3>
+        <ul>
+          <li><strong>~Half the chainstate</strong> of a standard node — several GB smaller today, widening every year.</li>
+          <li><strong>Faster sync and startup.</strong> Smaller working set fits in memory; validation accelerates.</li>
+          <li><strong>Lower hardware floor</strong> for running a fully validating, fully sovereign node.</li>
+          <li><strong>A relay network where spam faces ever-increasing friction</strong> — and block space returns to money.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="game">
+  <div class="wrap">
+    <h2>The long game</h2>
+    <p class="pull">The cheapest fully validating node wins. No prohibition, no fork — just attrition, until running a spam node is a costly eccentricity.</p>
+    <p class="dim">As Monetary Nodes spread — adopted for the disk savings alone — unconfirmed spam propagates through a shrinking subgraph of the network. And in the endgame, Monetary Nodes inherit the archival role: history is preserved in the block archives, spam survives only in the history books, and no working database anywhere carries it again. Bitcoin remains money because its node operators choose, one by one, to run it as money.</p>
+  </div>
+</section>
+
+<section id="technical">
+  <div class="wrap">
+    <h2>Technical details</h2>
+    <p class="dim">The full design in plain language. Everything here is also specified formally in the <a href="https://github.com/sampatneal/BitcoinMonetaryNode/blob/main/Monetary_Nodes.md" target="_blank" rel="noopener noreferrer">BIP draft</a>.</p>
+    <div class="tech">
+
+
+    <h2>1. What gets classified as spam</h2>
+    <p>Detection is purely mechanical — no external services, no indexers, no judgment calls. Three rules, applied to raw transaction data:</p>
+    <p><strong>Inscriptions.</strong> Ordinals hide data inside a script branch that provably never executes: a false value followed by <code>OP_IF ... OP_ENDIF</code>. Since the branch can never run, it has exactly one purpose — smuggling data. The rule catches any encoding of "false" (checked by script semantics, not byte matching), so trivial evasions don't work.</p>
+    <p><strong>Stamps.</strong> Bitcoin Stamps abuse bare multisig outputs by stuffing data where public keys should be. The rule catches keys that aren't valid points or match known data-encoding patterns.</p>
+    <p><strong>Token markers.</strong> <code>OP_RETURN</code> outputs carrying registered token-protocol identifiers (BRC-20 JSON, Runes markers), from a versioned list.</p>
+    <p class="dim">Any two implementations applying these rules to the same block must reach identical answers — that determinism is what makes everything downstream possible. Operators can add stricter local filters for relay, but those never affect the shared rules. Ordinary <code>OP_RETURN</code> up to 83 bytes is left alone: it's already provably unspendable and never enters the UTXO set.</p>
+
+    <h2>2. What is deleted, what is kept</h2>
+    <p>A Monetary Node validates every block completely — every signature, every amount, every rule, identical to Bitcoin Core. Then, as each block connects:</p>
+    <p><strong>Deleted:</strong> the content of spam outputs (the embedded data and its script) is removed from chainstate, the node's working database of spendable coins. This happens continuously, including during initial sync — spam never accumulates at any point in the node's life.</p>
+    <p><strong>Kept forever:</strong> every block header (which contains every block hash — about 70MB for the whole chain, same as any node); a compact filter index recording each deleted output's ID, amount, and location (~48 bytes instead of up to tens of kilobytes); and the two state fingerprints described next.</p>
+    <p><strong>Kept by default, prunable by choice:</strong> full block files, byte-identical to any archival node's. Filtering never touches blocks — only the working database.</p>
+
+    <h2>3. The two fingerprints, and why they're married</h2>
+    <p>Deleting spam creates two legitimate views of the ledger's state: the full view (what a legacy node holds) and the clean view (what a Monetary Node holds). From block 680,000 — which predates inscriptions — every Monetary Node computes a running cryptographic fingerprint of each: the <strong>legacy state root</strong> and the <strong>monetary state root</strong>, using the same incremental hashing (MuHash) that Bitcoin Core already ships.</p>
+    <p>A subtle point: the node maintains the legacy fingerprint <em>without storing the spam</em>. Each spam output is hashed into the legacy accumulator at validation time, an instant before deletion. The fingerprint of the full state survives even though the full state isn't kept — and it stays maintainable even in a future with no legacy nodes at all.</p>
+    <p>The two roots are then bound together with the block hash into a single <strong>paired commitment</strong>: <code>C = SHA256d(block hash ‖ legacy root ‖ monetary root)</code>. This marriage means no one can present a clean-state fingerprint that doesn't correspond to the real full state of the real chain — mix-and-match is detectable with one 32-byte comparison.</p>
+    <div class="note"><strong>Optional proof-of-work notarization.</strong> Miners can voluntarily embed the paired commitment in their coinbase (the same structural trick as SegWit's witness commitment — no rule change involved). Nodes never reject blocks over it, but wherever it appears, a miner has notarized the clean state under proof-of-work, creating a hardened audit trail that grows with adoption.</div>
+
+    <h2>3b. The whole pipeline, in one picture</h2>
+    <div style="background:var(--panel);border:1px solid var(--rule);padding:1.5rem 1rem 1rem;margin:1rem 0 .5rem">
+      <svg viewBox="0 0 700 470" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto" role="img" aria-label="Pipeline diagram: a block is fully validated, then splits three ways into monetary chainstate, filter index, and unmodified block files; the two state hashes combine into commitment C; spends of deleted outputs are reconstructed from the block archive">
+        <defs>
+          <pattern id="spamfill2" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="6" height="6" fill="#2a1516"/>
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#d9534f" stroke-width="2.5" opacity=".8"/>
+          </pattern>
+          <marker id="aP" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9a978f"/></marker>
+          <marker id="aPo" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f7931a"/></marker>
+        </defs>
+        <g font-family="monospace">
+
+        <rect x="150" y="24" width="400" height="46" fill="#0d0e10" stroke="#3a3b40" stroke-width="1.5"/>
+        <text x="350" y="43" fill="#e8e6e1" font-size="10.5" text-anchor="middle">A BLOCK ARRIVES — as mined, unchanged</text>
+        <rect x="286" y="50" width="14" height="14" fill="#f7931a"/><rect x="304" y="50" width="14" height="14" fill="url(#spamfill2)" stroke="#d9534f"/><rect x="322" y="50" width="14" height="14" fill="#f7931a"/><rect x="340" y="50" width="14" height="14" fill="#f7931a"/><rect x="358" y="50" width="14" height="14" fill="url(#spamfill2)" stroke="#d9534f"/><rect x="376" y="50" width="14" height="14" fill="#f7931a"/>
+
+        <line x1="350" y1="70" x2="350" y2="88" stroke="#9a978f" stroke-width="1.5" marker-end="url(#aP)"/>
+
+        <rect x="110" y="92" width="480" height="36" fill="#141518" stroke="#e8e6e1"/>
+        <text x="350" y="109" fill="#e8e6e1" font-size="10.5" text-anchor="middle">FULL CONSENSUS VALIDATION</text>
+        <text x="350" y="122" fill="#9a978f" font-size="9.5" text-anchor="middle">every signature, every rule — identical to a full node</text>
+
+        <path d="M 350 128 L 350 146 L 140 146 L 140 162" fill="none" stroke="#f7931a" stroke-width="1.5" marker-end="url(#aPo)"/>
+        <path d="M 350 128 L 350 162" fill="none" stroke="#d9534f" stroke-width="1.5" stroke-dasharray="4,4" marker-end="url(#aP)"/>
+        <path d="M 350 128 L 350 146 L 560 146 L 560 162" fill="none" stroke="#9a978f" stroke-width="1.5" marker-end="url(#aP)"/>
+
+        <rect x="30" y="166" width="220" height="74" fill="#0d0e10" stroke="#f7931a" stroke-width="1.5"/>
+        <text x="140" y="185" fill="#f7931a" font-size="10" text-anchor="middle">MONETARY CHAINSTATE</text>
+        <text x="140" y="202" fill="#e8e6e1" font-size="9.5" text-anchor="middle">money outputs only</text>
+        <rect x="86" y="210" width="13" height="13" fill="#f7931a"/><rect x="103" y="210" width="13" height="13" fill="#f7931a"/><rect x="120" y="210" width="13" height="13" fill="#f7931a"/><rect x="137" y="210" width="13" height="13" fill="#f7931a"/><rect x="154" y="210" width="13" height="13" fill="#f7931a"/><rect x="171" y="210" width="13" height="13" fill="#f7931a"/>
+        <text x="140" y="234" fill="#9a978f" font-size="9" text-anchor="middle">~half the size</text>
+
+        <rect x="260" y="166" width="180" height="74" fill="#0d0e10" stroke="#d9534f" stroke-width="1.5"/>
+        <text x="350" y="185" fill="#d9534f" font-size="10" text-anchor="middle">FILTER INDEX</text>
+        <text x="350" y="202" fill="#e8e6e1" font-size="9.5" text-anchor="middle">spam deleted ✕</text>
+        <text x="350" y="217" fill="#9a978f" font-size="9" text-anchor="middle">outpoint · amount · location</text>
+        <text x="350" y="234" fill="#9a978f" font-size="9" text-anchor="middle">~48 bytes each</text>
+
+        <rect x="450" y="166" width="220" height="74" fill="#0d0e10" stroke="#9a978f" stroke-width="1.5"/>
+        <text x="560" y="185" fill="#e8e6e1" font-size="10" text-anchor="middle">BLOCK FILES</text>
+        <text x="560" y="202" fill="#e8e6e1" font-size="9.5" text-anchor="middle">whole block, untouched</text>
+        <rect x="506" y="210" width="13" height="13" fill="#f7931a"/><rect x="523" y="210" width="13" height="13" fill="url(#spamfill2)"/><rect x="540" y="210" width="13" height="13" fill="#f7931a"/><rect x="557" y="210" width="13" height="13" fill="#f7931a"/><rect x="574" y="210" width="13" height="13" fill="url(#spamfill2)"/><rect x="591" y="210" width="13" height="13" fill="#f7931a"/>
+        <text x="560" y="234" fill="#9a978f" font-size="9" text-anchor="middle">byte-identical archive</text>
+
+        <path d="M 140 240 L 140 262 L 350 262" fill="none" stroke="#f7931a" stroke-width="1.5"/>
+        <path d="M 350 240 L 350 262" fill="none" stroke="#d9534f" stroke-width="1.5" stroke-dasharray="4,4"/>
+        <line x1="350" y1="262" x2="350" y2="280" stroke="#9a978f" stroke-width="1.5" marker-end="url(#aP)"/>
+        <text x="366" y="258" fill="#9a978f" font-size="9" text-anchor="start">spam hashed in before deletion</text>
+
+        <rect x="110" y="284" width="480" height="52" fill="#141518" stroke="#3a3b40"/>
+        <text x="350" y="303" fill="#e8e6e1" font-size="10.5" text-anchor="middle">TWO RUNNING HASHES (MuHash)</text>
+        <text x="350" y="320" fill="#9a978f" font-size="9.5" text-anchor="middle">L — full state (spam included) · M — filtered state</text>
+        <text x="350" y="332" fill="#9a978f" font-size="9" text-anchor="middle">L stays correct without storing the data</text>
+
+        <line x1="350" y1="336" x2="350" y2="354" stroke="#f7931a" stroke-width="1.5" marker-end="url(#aPo)"/>
+
+        <rect x="150" y="358" width="400" height="48" fill="#141518" stroke="#f7931a" stroke-width="1.5"/>
+        <text x="350" y="378" fill="#e8e6e1" font-size="11" text-anchor="middle">C = SHA256d(block hash ‖ L ‖ M)</text>
+        <text x="350" y="394" fill="#9a978f" font-size="9" text-anchor="middle">every block · audited between peers · committed in snapshots</text>
+
+        <rect x="110" y="424" width="480" height="34" fill="#0d0e10" stroke="#3a3b40" stroke-dasharray="5,4"/>
+        <text x="350" y="440" fill="#9a978f" font-size="9.5" text-anchor="middle">Someone spends a deleted output? Recover the original from BLOCK FILES,</text>
+        <text x="350" y="452" fill="#9a978f" font-size="9.5" text-anchor="middle">check it against the validated header chain, validate the spend normally.</text>
+
+        </g>
+      </svg>
+    </div>
+    <p class="dim" style="font-size:.85rem">Reading the picture top to bottom: blocks arrive and are validated in full; money outputs flow into the monetary chainstate, spam is hashed into the legacy root and then deleted (leaving a 48-byte index entry), and the whole block is archived unmodified. Both roots are folded into commitment <code>C</code> every block. The dashed loop on the right is the rare path: someone spends a deleted output, the original is reconstructed from the archive, and the spend is validated exactly like any other. An existing node can adopt all of this via a reindex — replaying its own block files to rebuild the filtered chainstate and both hashes.</p>
+
+    <h2>4. Spending a deleted output</h2>
+    <p>Deleted outputs remain spendable — deletion is a storage decision, never a validity decision. When a block spends one, the node reconstructs the original output and validates the spend completely:</p>
+    <p>First choice: read it from local block files (the default, since blocks are kept). Fallback: request the old block from any peer using the standard <code>getdata</code> message that has existed since 2009, verify it against the block hash already sitting in the node's validated header chain, and extract the output. Fully trustless, no new infrastructure.</p>
+    <p class="dim">To keep block processing fast, nodes pre-fetch the needed data when they first see the spend in a transaction (before it's mined), and cap concurrent historical fetches per block so a malicious block full of ancient spam spends can only slow one node's local timing — never affect validity.</p>
+
+    <h2>5. How new nodes join</h2>
+    <p><strong>Default path — full sync.</strong> Download every block from any peer, validate everything, delete spam as you go, compute both fingerprints and the paired commitment at every height. Monetary Nodes that keep block files serve them exactly like archival nodes, so a network of mostly Monetary Nodes syncs its own newcomers. Along the way, a syncing node can compare its paired commitments against other monetary peers — a divergence exposes a bug or a liar, but peer values are advisory only and never override local computation.</p>
+    <p><strong>Fast path — snapshot.</strong> Modeled on Bitcoin Core's shipped <code>assumeutxo</code> feature, with the identical trust model. Each software release can commit to the hash of a clean-state snapshot at a checkpoint height — a hash anyone can independently recompute and audit, since the software is open source. A new node fetches the snapshot from any monetary peer, checks it against the release-committed hash (which includes the paired commitment, so a fabricated clean state can't masquerade as real), and is operational in minutes. Then, mandatorily, it downloads and fully validates the whole chain in the background — from monetary peers or any archival full node — and confirms the snapshot was honest. A bad snapshot cannot survive this. Until verification completes, the node doesn't serve snapshots to others.</p>
+
+    <div style="background:var(--panel);border:1px solid var(--rule);padding:1.5rem 1rem 1rem;margin:1.25rem 0 .5rem">
+      <svg viewBox="0 0 700 400" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto" role="img" aria-label="Diagram: a new monetary node can perform initial block download from either a legacy archival node or another monetary node, because both serve byte-identical blocks, and reaches the same result either way">
+        <defs>
+          <pattern id="spamfill4" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="6" height="6" fill="#2a1516"/>
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#d9534f" stroke-width="2.5" opacity=".8"/>
+          </pattern>
+          <marker id="aI" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9a978f"/></marker>
+          <marker id="aIo" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#f7931a"/></marker>
+        </defs>
+        <g font-family="monospace">
+
+        <text x="350" y="16" fill="#9a978f" font-size="10.5" text-anchor="middle">SYNC FROM EITHER — THE PEER TYPE DOES NOT MATTER</text>
+
+        <rect x="30" y="28" width="280" height="62" fill="#0d0e10" stroke="#3a3b40" stroke-width="1.5"/>
+        <text x="170" y="45" fill="#e8e6e1" font-size="10.5" text-anchor="middle">LEGACY / ARCHIVAL NODE</text>
+        <rect x="136" y="53" width="14" height="14" fill="#f7931a"/><rect x="154" y="53" width="14" height="14" fill="url(#spamfill4)" stroke="#d9534f"/><rect x="172" y="53" width="14" height="14" fill="#f7931a"/><rect x="190" y="53" width="14" height="14" fill="#f7931a"/>
+        <text x="170" y="82" fill="#9a978f" font-size="9.5" text-anchor="middle">chainstate holds spam too</text>
+
+        <rect x="390" y="28" width="280" height="62" fill="#0d0e10" stroke="#f7931a" stroke-width="1.5"/>
+        <text x="530" y="45" fill="#f7931a" font-size="10.5" text-anchor="middle">MONETARY NODE</text>
+        <rect x="496" y="53" width="14" height="14" fill="#f7931a"/><rect x="514" y="53" width="14" height="14" fill="#f7931a"/><rect x="532" y="53" width="14" height="14" fill="#f7931a"/><rect x="550" y="53" width="14" height="14" fill="#f7931a"/>
+        <text x="530" y="82" fill="#9a978f" font-size="9.5" text-anchor="middle">spam dropped from chainstate</text>
+
+        <text x="170" y="106" fill="#9a978f" font-size="9.5" text-anchor="middle">block files: full, unmodified</text>
+        <text x="530" y="106" fill="#9a978f" font-size="9.5" text-anchor="middle">block files: full, unmodified</text>
+
+        <path d="M 170 112 L 170 132 L 350 132" fill="none" stroke="#9a978f" stroke-width="1.5"/>
+        <path d="M 530 112 L 530 132 L 350 132" fill="none" stroke="#f7931a" stroke-width="1.5"/>
+        <line x1="350" y1="132" x2="350" y2="150" stroke="#9a978f" stroke-width="1.5" marker-end="url(#aI)"/>
+
+        <rect x="110" y="154" width="480" height="36" fill="#141518" stroke="#e8e6e1"/>
+        <text x="350" y="171" fill="#e8e6e1" font-size="10.5" text-anchor="middle">THE SAME BLOCK BYTES</text>
+        <text x="350" y="184" fill="#9a978f" font-size="9.5" text-anchor="middle">whatever the source, each block is checked against your own validated header chain</text>
+
+        <line x1="350" y1="190" x2="350" y2="208" stroke="#9a978f" stroke-width="1.5" marker-end="url(#aI)"/>
+
+        <rect x="110" y="212" width="480" height="82" fill="#0d0e10" stroke="#f7931a" stroke-width="1.5"/>
+        <text x="350" y="232" fill="#f7931a" font-size="10.5" text-anchor="middle">YOUR NEW MONETARY NODE</text>
+        <text x="350" y="250" fill="#e8e6e1" font-size="10" text-anchor="middle">validate every consensus rule</text>
+        <text x="350" y="266" fill="#e8e6e1" font-size="10" text-anchor="middle">drop spam as each block connects</text>
+        <text x="350" y="282" fill="#e8e6e1" font-size="10" text-anchor="middle">compute both hashes + commitment C locally</text>
+
+        <line x1="350" y1="294" x2="350" y2="312" stroke="#f7931a" stroke-width="1.5" marker-end="url(#aIo)"/>
+
+        <rect x="150" y="316" width="400" height="42" fill="#141518" stroke="#f7931a" stroke-width="1.5"/>
+        <text x="350" y="335" fill="#e8e6e1" font-size="11" text-anchor="middle">Identical chain tip either way</text>
+        <text x="350" y="350" fill="#9a978f" font-size="9.5" text-anchor="middle">filtering is local — it never changes what a node serves</text>
+
+        <text x="530" y="380" fill="#9a978f" font-size="9" text-anchor="middle">a monetary peer can additionally offer a verified snapshot — optional, not required</text>
+
+        </g>
+      </svg>
+    </div>
+    <p class="dim" style="font-size:.85rem">The common objection is that a filtering node can't bootstrap others. It can. Filtering applies to chainstate — the working database — and never to block files, which are retained unmodified and byte-identical to any archival node's. So a monetary node serves history exactly like a legacy one, and a new node reaches the same tip regardless of which it synced from. Chainstate is a derived index; blocks are the source of truth.</p>
+
+    <h2>6. What happens to proof-of-work</h2>
+    <p>Nothing. There is one chain. Monetary Nodes accept every block a Core node accepts, follow the same most-work chain selection, and never reject a block for containing spam. The full hashrate of the network secures a Monetary Node exactly as much as it secures any other node. The two fingerprints are bookkeeping over the same chain — not competing chains.</p>
+
+    <h2>7. The monetary endgame: spam extinction</h2>
+    <div style="background:var(--panel);border:1px solid var(--rule);padding:1.5rem 1rem 1rem;margin:0 0 1.25rem">
+      <svg viewBox="0 0 700 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto" role="img" aria-label="Diagram: as spam compounds, legacy nodes require ever more expensive hardware while monetary nodes stay cheap; the network's composition shifts to monetary nodes until spam nodes are abandoned">
+        <defs>
+          <pattern id="spamfill3" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="6" height="6" fill="#2a1516"/>
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#d9534f" stroke-width="2.5" opacity=".8"/>
+          </pattern>
+          <marker id="aG3" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9a978f"/></marker>
+        </defs>
+
+        <g font-family="monospace">
+        <!-- column headers -->
+        <text x="130" y="20" fill="#9a978f" font-size="11" text-anchor="middle">TODAY</text>
+        <text x="350" y="20" fill="#9a978f" font-size="11" text-anchor="middle">AS SPAM COMPOUNDS</text>
+        <text x="570" y="20" fill="#f7931a" font-size="11" font-weight="bold" text-anchor="middle">ENDGAME</text>
+
+        <!-- ===== column 1: today ===== -->
+        <!-- legacy stack: 3 disks, 1 spam -->
+        <text x="75" y="112" fill="#9a978f" font-size="12" text-anchor="middle">$</text>
+        <rect x="35" y="120" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+        <rect x="35" y="134" width="80" height="12" fill="#3a3b40"/>
+        <rect x="35" y="148" width="80" height="12" fill="#3a3b40"/>
+        <!-- monetary stack: 2 disks -->
+        <text x="185" y="140" fill="#f7931a" font-size="12" text-anchor="middle">$</text>
+        <rect x="145" y="148" width="80" height="12" fill="#f7931a"/>
+        <rect x="145" y="134" width="80" height="12" fill="#f7931a" opacity=".75"/>
+        <text x="75" y="178" fill="#9a978f" font-size="9.5" text-anchor="middle">legacy node</text>
+        <text x="185" y="178" fill="#f7931a" font-size="9.5" text-anchor="middle">monetary node</text>
+
+        <!-- ===== column 2: spam compounds ===== -->
+        <!-- legacy stack: 6 disks, 3 spam -->
+        <text x="295" y="68" fill="#d9534f" font-size="12" text-anchor="middle">$$$</text>
+        <rect x="255" y="76" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+        <rect x="255" y="90" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+        <rect x="255" y="104" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+        <rect x="255" y="118" width="80" height="12" fill="#3a3b40"/>
+        <rect x="255" y="132" width="80" height="12" fill="#3a3b40"/>
+        <rect x="255" y="146" width="80" height="12" fill="#3a3b40"/>
+        <!-- monetary stack: still 2 disks -->
+        <text x="405" y="140" fill="#f7931a" font-size="12" text-anchor="middle">$</text>
+        <rect x="365" y="148" width="80" height="12" fill="#f7931a"/>
+        <rect x="365" y="134" width="80" height="12" fill="#f7931a" opacity=".75"/>
+        <text x="295" y="178" fill="#9a978f" font-size="9.5" text-anchor="middle">heavier · pricier</text>
+        <text x="405" y="178" fill="#f7931a" font-size="9.5" text-anchor="middle">same lean node</text>
+
+        <!-- ===== column 3: endgame ===== -->
+        <!-- legacy stack: 9 disks, 6 spam, abandoned -->
+        <g opacity=".45">
+          <text x="515" y="26" fill="#d9534f" font-size="12" text-anchor="middle">$$$$$</text>
+          <rect x="475" y="34" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+          <rect x="475" y="48" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+          <rect x="475" y="62" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+          <rect x="475" y="76" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+          <rect x="475" y="90" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+          <rect x="475" y="104" width="80" height="12" fill="url(#spamfill3)" stroke="#d9534f" stroke-width="1"/>
+          <rect x="475" y="118" width="80" height="12" fill="#3a3b40"/>
+          <rect x="475" y="132" width="80" height="12" fill="#3a3b40"/>
+          <rect x="475" y="146" width="80" height="12" fill="#3a3b40"/>
+        </g>
+        <!-- monetary stack: still 2 disks -->
+        <text x="625" y="140" fill="#f7931a" font-size="12" text-anchor="middle">$</text>
+        <rect x="585" y="148" width="80" height="12" fill="#f7931a"/>
+        <rect x="585" y="134" width="80" height="12" fill="#f7931a" opacity=".75"/>
+        <text x="515" y="178" fill="#d9534f" font-size="9.5" text-anchor="middle" opacity=".7">abandoned</text>
+        <text x="625" y="178" fill="#f7931a" font-size="9.5" text-anchor="middle">the archival layer</text>
+
+        <!-- inter-column arrows -->
+        <line x1="230" y1="120" x2="250" y2="120" stroke="#9a978f" stroke-width="1.5" marker-end="url(#aG3)"/>
+        <line x1="450" y1="120" x2="470" y2="120" stroke="#9a978f" stroke-width="1.5" marker-end="url(#aG3)"/>
+
+        <!-- network composition dots -->
+        <text x="40" y="216" fill="#9a978f" font-size="10">REACHABLE NODES</text>
+        <!-- col1: 4 orange, 16 red -->
+        <g>
+          <circle cx="49" cy="232" r="6" fill="#f7931a"/><circle cx="67" cy="232" r="6" fill="#f7931a"/><circle cx="85" cy="232" r="6" fill="#f7931a"/><circle cx="103" cy="232" r="6" fill="#f7931a"/><circle cx="121" cy="232" r="6" fill="#d9534f" opacity=".8"/><circle cx="139" cy="232" r="6" fill="#d9534f" opacity=".8"/><circle cx="157" cy="232" r="6" fill="#d9534f" opacity=".8"/><circle cx="175" cy="232" r="6" fill="#d9534f" opacity=".8"/><circle cx="193" cy="232" r="6" fill="#d9534f" opacity=".8"/><circle cx="211" cy="232" r="6" fill="#d9534f" opacity=".8"/>
+          <circle cx="49" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="67" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="85" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="103" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="121" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="139" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="157" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="175" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="193" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="211" cy="250" r="6" fill="#d9534f" opacity=".8"/>
+        </g>
+        <!-- col2: 12 orange, 8 red -->
+        <g>
+          <circle cx="269" cy="232" r="6" fill="#f7931a"/><circle cx="287" cy="232" r="6" fill="#f7931a"/><circle cx="305" cy="232" r="6" fill="#f7931a"/><circle cx="323" cy="232" r="6" fill="#f7931a"/><circle cx="341" cy="232" r="6" fill="#f7931a"/><circle cx="359" cy="232" r="6" fill="#f7931a"/><circle cx="377" cy="232" r="6" fill="#f7931a"/><circle cx="395" cy="232" r="6" fill="#f7931a"/><circle cx="413" cy="232" r="6" fill="#f7931a"/><circle cx="431" cy="232" r="6" fill="#f7931a"/>
+          <circle cx="269" cy="250" r="6" fill="#f7931a"/><circle cx="287" cy="250" r="6" fill="#f7931a"/><circle cx="305" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="323" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="341" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="359" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="377" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="395" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="413" cy="250" r="6" fill="#d9534f" opacity=".8"/><circle cx="431" cy="250" r="6" fill="#d9534f" opacity=".8"/>
+        </g>
+        <!-- col3: 19 orange, 1 red fading -->
+        <g>
+          <circle cx="489" cy="232" r="6" fill="#f7931a"/><circle cx="507" cy="232" r="6" fill="#f7931a"/><circle cx="525" cy="232" r="6" fill="#f7931a"/><circle cx="543" cy="232" r="6" fill="#f7931a"/><circle cx="561" cy="232" r="6" fill="#f7931a"/><circle cx="579" cy="232" r="6" fill="#f7931a"/><circle cx="597" cy="232" r="6" fill="#f7931a"/><circle cx="615" cy="232" r="6" fill="#f7931a"/><circle cx="633" cy="232" r="6" fill="#f7931a"/><circle cx="651" cy="232" r="6" fill="#f7931a"/>
+          <circle cx="489" cy="250" r="6" fill="#f7931a"/><circle cx="507" cy="250" r="6" fill="#f7931a"/><circle cx="525" cy="250" r="6" fill="#f7931a"/><circle cx="543" cy="250" r="6" fill="#f7931a"/><circle cx="561" cy="250" r="6" fill="#f7931a"/><circle cx="579" cy="250" r="6" fill="#f7931a"/><circle cx="597" cy="250" r="6" fill="#f7931a"/><circle cx="615" cy="250" r="6" fill="#f7931a"/><circle cx="633" cy="250" r="6" fill="#f7931a"/><circle cx="651" cy="250" r="6" fill="#d9534f" opacity=".3"/>
+        </g>
+
+        <!-- flywheel -->
+        <text x="350" y="296" fill="#9a978f" font-size="10.5" text-anchor="middle">more spam → heavier legacy node → operators switch → monetary share grows → spam starved of relay</text>
+        <text x="350" y="318" fill="#f7931a" font-size="10.5" font-weight="bold" text-anchor="middle">the loop runs until the red is gone</text>
+        <path d="M 610 300 Q 660 330 350 336 Q 60 340 92 302" fill="none" stroke="#3a3b40" stroke-width="1.2" stroke-dasharray="4,5" marker-end="url(#aG3)"/>
+        </g>
+      </svg>
+    </div>
+    <p>The friction on spam is designed to increase with every operator who switches. Each new Monetary Node is one less machine relaying spam, one less mempool accepting it, one more peer that syncs newcomers without it. Meanwhile legacy nodes grow steadily more cumbersome to run — their chainstate bloating with every inscription, their sync times lengthening, their hardware demands climbing — while the monetary alternative gets comparatively cheaper every year. The economics compound in one direction: Monetary Nodes make up more and more of the network not because anyone mandates it, but because running the heavier node buys the operator nothing.</p>
+    <p>Alongside the economics runs the social layer. Bitcoin has always been governed, in the last instance, by what its node operators collectively refuse to subsidize — that is how every contentious era has ultimately been settled. As monetary policy becomes the network's default posture, the social consensus hardens with it: spam is not attacked, not confiscated, not forbidden — it is soundly rejected by the culture, starved of relay, starved of storage, and faded out into oblivion.</p>
+    <p>The endgame still has to keep two things alive: validating spends of long-deleted outputs, and syncing new nodes from genesis. Both need full historical blocks, so <strong>Monetary Nodes inherit the archival role.</strong> Block-file retention is the default configuration; pruning warns the operator of network-level consequences; the population of block-serving peers is monitored. The legacy fingerprint needs no legacy nodes at all — it's maintained by the monetary network itself, forever.</p>
+    <p class="dim">The end state: spam is preserved in the history books, because Bitcoin's history is immutable — but no working database anywhere carries it again, and no one is left who will carry it forward.</p>
+
+    <h2>8. Known costs, stated honestly</h2>
+    <p><strong>Compact block relay:</strong> because spam never sits in a Monetary Node's mempool, relaying a spam-bearing block requires one extra round trip to fetch the missing transactions — tens of milliseconds, already borne by filtering nodes today.</p>
+    <p><strong>Miners follow fees:</strong> this proposal doesn't bind miners, and direct-to-miner submission bypasses relay filtering entirely. What it changes is what every sovereign node operator subsidizes with their own disk and bandwidth — and it makes the refusal costless. The friction on spam grows with adoption; it is attrition, not prohibition.</p>
+    <p><strong>Classification maintenance:</strong> the token-marker list is versioned and will need updates as protocols evolve. The inscription and stamp rules are structural and evasion-resistant by design.</p>
+
+    <h2>9. Implementation</h2>
+    <p>Reference implementation planned as a Bitcoin Knots patchset — Knots already ships the datacarrier limits and inscription filters this design extends. Changes touch policy, indexing, and peer services only; consensus code is untouched. A Bitcoin Core port is invited. Test vectors for classification and state fingerprints will be published alongside.</p>
+
+    <p style="margin-top:2.5rem"><a href="https://github.com/sampatneal/BitcoinMonetaryNode/blob/main/Monetary_Nodes.md" target="_blank" rel="noopener noreferrer">Full BIP draft</a> · <a href="https://groups.google.com/g/bitcoindev/c/Q6ulQb13okg" target="_blank" rel="noopener noreferrer">"The Cat" discussion</a> · <a href="https://x.com/marketanarchy21" target="_blank" rel="noopener noreferrer">@marketanarchy21</a></p>
+
+  
+    </div>
+  </div>
+</section>
+
+<section id="read">
+  <div class="wrap">
+    <h2>Read more</h2>
+    <div class="biglinks">
+      <a class="biglink" href="#technical"><b>Technical details <span class="arrow">→</span></b><span>The full design in plain language</span></a>
+      <a class="biglink" href="https://github.com/sampatneal/BitcoinMonetaryNode/blob/main/Monetary_Nodes.md" target="_blank" rel="noopener noreferrer"><b>Full BIP draft <span class="arrow">→</span></b><span>Complete formal specification on GitHub</span></a>
+      <a class="biglink" href="https://x.com/marketanarchy21" target="_blank" rel="noopener noreferrer"><b>@marketanarchy21 <span class="arrow">→</span></b><span>Follow the proposal on X</span></a>
+      <a class="biglink" href="https://groups.google.com/g/bitcoindev/c/Q6ulQb13okg" target="_blank" rel="noopener noreferrer"><b>"The Cat" <span class="arrow">→</span></b><span>The 2025 proposal that inspired this one</span></a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>Monetary Nodes · <a href="https://github.com/sampatneal/BitcoinMonetaryNode/blob/main/Monetary_Nodes.md" target="_blank" rel="noopener noreferrer">BIP draft</a> · 2026 · BSD-2-Clause · <a href="https://x.com/marketanarchy21" target="_blank" rel="noopener noreferrer">@marketanarchy21</a></span>
+    <span>Inspired by <a href="https://groups.google.com/g/bitcoindev/c/Q6ulQb13okg" target="_blank" rel="noopener noreferrer">"The Cat"</a> (Ostrom, 2025) · Built for Bitcoin Knots</span>
+  </div>
+</footer>
+
+
+<script>
+(function () {
+  function jump(id) {
+    var el = document.getElementById(id);
+    if (!el) return false;
+    var nav = document.querySelector('nav');
+    var offset = nav ? nav.getBoundingClientRect().height : 0;
+    var y = el.getBoundingClientRect().top + (window.pageYOffset || document.documentElement.scrollTop) - offset - 8;
+    try { window.scrollTo({ top: y, behavior: 'smooth' }); }
+    catch (e) { window.scrollTo(0, y); }
+    return true;
+  }
+  document.addEventListener('click', function (e) {
+    var a = e.target && e.target.closest ? e.target.closest('a') : null;
+    if (!a) return;
+    var href = a.getAttribute('href') || '';
+    var hash = '';
+    if (href.charAt(0) === '#') hash = href.slice(1);
+    else {
+      var i = href.indexOf('#');
+      if (i > -1 && href.indexOf('host-html-user.com') > -1) hash = href.slice(i + 1);
+    }
+    if (hash) { if (jump(hash)) { e.preventDefault(); e.stopPropagation(); } return; }
+    if (/^https?:\/\//.test(href)) {
+      e.preventDefault();
+      try { window.open(href, '_blank', 'noopener'); }
+      catch (err) { try { window.top.location.href = href; } catch (e2) { location.href = href; } }
+    }
+  }, true);
+})();
+</script>
+</body>
+</html>
