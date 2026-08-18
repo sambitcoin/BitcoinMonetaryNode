@@ -3,23 +3,26 @@
 inscription_scan_local.py — measure inscription envelope payload bytes by
 reading Bitcoin block files directly. No RPC, no network, no rate limits.
 
-Handles the XOR-obfuscated blocksdir introduced in Bitcoin Core 28 (and
-inherited by Knots): if blocks/xor.dat is present, its 8-byte key is applied
-cyclically by absolute file offset to decode block data on read.
+Counts, per block: total bytes, witness bytes, envelope payload bytes (data
+pushed inside unexecutable OP_IF branches in taproot script-path witnesses),
+and the subset carrying the "ord" protocol marker.
 
-Reads blk*.dat, builds the block index itself, then parses only the blocks in
-the requested height range.
+Handles the XOR-obfuscated blocksdir introduced in Bitcoin Core 28 and
+inherited by Knots: if blocks/xor.dat is present, its 8-byte key is applied
+cyclically by absolute file offset to decode block data on read. Without this,
+a reader finds zero blocks and reports no error.
 
 Usage:
     python3 inscription_scan_local.py \
-        --blocks /data/umbrel-os/home/umbrel/umbrel/app-data/bitcoin-knots/data/bitcoin/blocks \
+        --blocks /path/to/bitcoin/blocks \
         --start 767430 --end 962292 \
-        --csv ~/inscription_results.csv
+        --csv results.csv
 
     # resume after an interruption
     ... same command ... --resume
 
-Standard library only. Python 3.8+.
+Requires a non-pruned node. Standard library only. Python 3.8+.
+BSD-2-Clause.
 """
 
 import argparse
@@ -61,25 +64,21 @@ def load_xor_key(blocks_dir):
         key = f.read()
     if len(key) != 8:
         sys.exit(f"unexpected xor.dat length {len(key)} (expected 8)")
-    if key == b"\x00" * 8:
-        return None
-    return key
+    return None if key == b"\x00" * 8 else key
 
 
 def dexor(data, key, offset):
     """
-    Undo the blocksdir obfuscation.
+    Undo blocksdir obfuscation.
 
-    The key repeats every 8 bytes, indexed by absolute position in the file, so
+    The key repeats every 8 bytes indexed by absolute position in the file, so
     the tile must be phase-aligned to `offset`. Done as one big-integer XOR
-    rather than a Python loop — a 4MB block decodes in milliseconds.
+    rather than a Python loop; a 4MB block decodes in milliseconds.
     """
     if not key or not data:
         return data
     n = len(data)
-    phase = offset % 8
-    tile = key[phase:] + key * (n // 8 + 2)
-    tile = tile[:n]
+    tile = (key[offset % 8:] + key * (n // 8 + 2))[:n]
     return (int.from_bytes(data, "big") ^ int.from_bytes(tile, "big")).to_bytes(
         n, "big")
 
@@ -115,14 +114,14 @@ class BlockFile:
 
 def index_block_files(blocks_dir, key):
     """
-    First pass: walk every blk*.dat reading only headers.
+    Walk every blk*.dat reading only headers.
 
-    Returns:
+    Block files do not record heights, so the chain has to be reconstructed
+    from prev-hash links. Returns:
         by_hash:  block_hash -> (file_path, data_offset, size)
         children: prev_hash  -> [block_hash, ...]
     """
-    by_hash = {}
-    children = {}
+    by_hash, children = {}, {}
     files = sorted(glob.glob(os.path.join(blocks_dir, "blk*.dat")))
     if not files:
         sys.exit(f"no blk*.dat found in {blocks_dir}")
@@ -136,10 +135,8 @@ def index_block_files(blocks_dir, key):
         try:
             while True:
                 head = bf.read_seq(8)
-                if len(head) < 8:
+                if len(head) < 8 or head[:4] != MAINNET_MAGIC:
                     break
-                if head[:4] != MAINNET_MAGIC:
-                    break  # padding / end of useful data
                 size = struct.unpack("<I", head[4:])[0]
                 if size < 80 or size > 8_000_000:
                     break
@@ -147,10 +144,8 @@ def index_block_files(blocks_dir, key):
                 header = bf.read_seq(80)
                 if len(header) < 80:
                     break
-                bh = dsha(header)
-                prev = header[4:36]
-                by_hash[bh] = (path, offset, size)
-                children.setdefault(prev, []).append(bh)
+                by_hash[dsha(header)] = (path, offset, size)
+                children.setdefault(header[4:36], []).append(dsha(header))
                 bf.seek(offset + size)
         finally:
             bf.close()
@@ -164,10 +159,7 @@ def index_block_files(blocks_dir, key):
 
 
 def build_height_map(by_hash, children, max_height):
-    """
-    Walk forward from genesis assigning heights, preferring the branch that
-    extends furthest at any fork. Drops orphans.
-    """
+    """Walk from genesis assigning heights, preferring the longest branch."""
     if GENESIS not in by_hash:
         sys.exit("genesis block not found — is this a mainnet blocks directory?")
 
@@ -249,6 +241,7 @@ ORD_MARKER = b"ord"
 
 
 def iter_script(script):
+    """Yield (opcode, pushed_data_or_None, bytes_consumed). Raises if malformed."""
     i, n = 0, len(script)
     while i < n:
         start = i
@@ -284,7 +277,16 @@ def iter_script(script):
 
 
 def find_envelopes(script):
-    """Unexecutable OP_IF branches; falsity by script semantics, not literals."""
+    """
+    Find unexecutable data branches in a tapscript.
+
+    An envelope is a branch opened by a provably false condition followed by
+    OP_IF and closed by the matching OP_ENDIF. Falsity is evaluated by script
+    semantics rather than by matching an opcode literal: OP_0, an empty push,
+    and a push of 0x00 all qualify, so re-encoded variants are not missed.
+
+    Returns [(payload_bytes, has_ord_marker), ...].
+    """
     out = []
     try:
         ops = list(iter_script(script))
@@ -321,6 +323,7 @@ def find_envelopes(script):
 
 
 def is_taproot_script_path(items):
+    """BIP341: script-path spends end with a control block of 33 + 32m bytes."""
     if len(items) < 2:
         return False
     c = items[-1]
@@ -339,7 +342,7 @@ def scan_block(data):
     s["tx_count"] = n_tx
 
     for _ in range(n_tx):
-        r.u32()
+        r.u32()  # version
         segwit = r.peek(2) == b"\x00\x01"
         if segwit:
             r.read(2)
@@ -368,7 +371,7 @@ def scan_block(data):
                             s["ord_payload_bytes"] += payload
             s["witness_bytes"] += (r.pos - w0) + 2
 
-        r.u32()
+        r.u32()  # locktime
 
     return s
 
@@ -473,8 +476,7 @@ def main():
 
     n_total = args.end - start + 1
     t0 = time.time()
-    done = 0
-    last_h = start - 1
+    done, last_h = 0, start - 1
     open_path, bf = None, None
 
     try:
@@ -492,7 +494,6 @@ def main():
                 open_path = path
 
             s = scan_block(bf.read_at(offset, size))
-
             for k in FIELDS:
                 totals[k] += s[k]
             done += 1
