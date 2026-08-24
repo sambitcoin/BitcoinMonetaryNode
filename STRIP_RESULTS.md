@@ -5,9 +5,14 @@ node. Every non-monetary carrier stripped, the result written to disk in a
 defined storage format, and every block's merkle root rebuilt and checked
 against its header.
 
-> **194,863 blocks. Zero merkle failures.**
+> **194,863 blocks stripped, written to disk, and re-verified from the store
+> alone. Zero failures.**
 
 Every block remains verifiable against its proof-of-work with all spam removed.
+
+The store is 247.4 GB against 296.2 GB of original blocks. The verification
+pass never opens a block file — it reads only the stripped store and checks
+each block against its own header.
 
 ## The mechanism
 
@@ -140,23 +145,33 @@ so far, been borne out.
 ## The store, not just the measurement
 
 This does not only measure what stripping would save. It writes the stripped
-blocks to disk in a defined format and reads them back.
-
-Blocks 900,000–902,000, written and re-verified **reading nothing but the
-store** — no `blk*.dat` involved:
+blocks to disk in a defined format, and then reads them back **with the original
+block files untouched** — no `blk*.dat` involved, nothing but the 247.4 GB
+store.
 
 | | |
 |---|---|
-| Blocks verified from disk | 2,001 |
-| Failed | 0 |
-| Records corrupt | 0 |
-| Retained whole | 4,395,514 (90.5%) |
-| Fully stripped | 0 |
-| Filter entries | 23,914 |
+| Blocks verified from disk | **194,863** |
+| Failed | **0** |
+| Records corrupt | **0** |
+| Filter entries | 806,626 |
+| Verification time | 3h26m |
 
-Every block was reconstructed from the store alone and matched its own header.
-That is the difference between showing spam *could* be removed and showing a
-node can hold the result and still prove it belongs to the chain.
+Every block in the inscription era was reconstructed from the stripped store
+alone and matched its own header — and therefore its own proof-of-work.
+
+That is the difference between showing spam *could* be removed and showing that
+a node can hold the result and still prove it belongs to the chain. The first is
+an argument. The second is a node.
+
+**What each integrity mechanism covers.** The merkle root protects retained
+transactions: corrupt a byte and the computed txid changes and the root stops
+matching. It does *not* protect modified transaction bodies or filter entries,
+because for those the txid is stored rather than derived, so it keeps matching
+whatever sits beneath it. Those are covered by a per-record body digest instead.
+That is local integrity — it detects corruption, not a peer sending a
+consistent falsehood. Agreement between nodes is the job of the chained
+commitment C (`monetary_commit.py`).
 
 Format specification in `FORMAT.md`; 42-check verification suite in
 `test_monetary_store.py`.
