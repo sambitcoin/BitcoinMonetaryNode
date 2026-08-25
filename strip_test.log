@@ -1,0 +1,42 @@
+block index loaded from cache (963,373 blocks, 5714 files)
+stripping 2,001 blocks...
+  1,000/2,001 blocks  height 900,999  1.2 GB written  99s, ~99s left
+  2,000/2,001 blocks  height 901,999  2.3 GB written  207s, ~0s left
+  2,001/2,001 blocks  height 902,000  2.3 GB written  207s, ~0s left
+
+==================================================================
+wrote blocks 900,000 .. 902,000 to /home/umbrel/mstore_test
+==================================================================
+elapsed               206.6s
+transactions whole    4,395,514
+             modified 459,532
+             stripped 0
+filter entries        23,914
+
+spam removed
+  inscription witness 196.6 MB
+  OP_RETURN >limit    10.2 KB
+  data multisig       2.4 MB
+  oversized scriptSig 0.0 B
+  total               199.0 MB
+
+dust outputs found    1,060,727  (retained in blocks, excluded from chainstate)
+
+original blocks       2.6 GB
+monetary store        2.3 GB   (91.12%)
+saved                 234.2 MB   (8.88%)
+
+merkle verified in memory  2,001 ok, 0 failed
+
+now verifying from disk, reading nothing but the store...
+
+verified from disk in 96.7s
+  blocks verified     2,001
+  blocks failed       0
+  records corrupt     0
+  filter entries      23,914
+
+All 2,001 blocks were reconstructed from the monetary store
+alone and verified against their own headers. The store is
+sufficient: every block remains provably part of the chain
+with all spam removed.

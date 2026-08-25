@@ -1,0 +1,235 @@
+nohup: ignoring input
+block index loaded from cache (963,373 blocks, 5714 files)
+stripping 194,863 blocks...
+  1,000/194,863 blocks  height 768,429  1.1 GB written  92s, ~17769s left
+  2,000/194,863 blocks  height 769,429  2.3 GB written  186s, ~17948s left
+  3,000/194,863 blocks  height 770,429  3.3 GB written  275s, ~17562s left
+  4,000/194,863 blocks  height 771,429  4.4 GB written  362s, ~17249s left
+  5,000/194,863 blocks  height 772,429  5.5 GB written  461s, ~17501s left
+  6,000/194,863 blocks  height 773,429  6.6 GB written  557s, ~17532s left
+  7,000/194,863 blocks  height 774,429  7.6 GB written  645s, ~17301s left
+  8,000/194,863 blocks  height 775,429  8.8 GB written  762s, ~17810s left
+  9,000/194,863 blocks  height 776,429  9.8 GB written  884s, ~18264s left
+  10,000/194,863 blocks  height 777,429  10.8 GB written  1006s, ~18589s left
+  11,000/194,863 blocks  height 778,429  12.0 GB written  1129s, ~18867s left
+  12,000/194,863 blocks  height 779,429  13.1 GB written  1246s, ~18995s left
+  13,000/194,863 blocks  height 780,429  14.2 GB written  1376s, ~19253s left
+  14,000/194,863 blocks  height 781,429  15.3 GB written  1505s, ~19445s left
+  15,000/194,863 blocks  height 782,429  16.3 GB written  1637s, ~19631s left
+  16,000/194,863 blocks  height 783,429  17.5 GB written  1781s, ~19909s left
+  17,000/194,863 blocks  height 784,429  18.6 GB written  1979s, ~20700s left
+  18,000/194,863 blocks  height 785,429  19.9 GB written  2110s, ~20730s left
+  19,000/194,863 blocks  height 786,429  21.2 GB written  2236s, ~20694s left
+  20,000/194,863 blocks  height 787,429  22.4 GB written  2370s, ~20717s left
+  21,000/194,863 blocks  height 788,429  23.6 GB written  2510s, ~20784s left
+  22,000/194,863 blocks  height 789,429  24.7 GB written  2665s, ~20943s left
+  23,000/194,863 blocks  height 790,429  25.9 GB written  2839s, ~21210s left
+  24,000/194,863 blocks  height 791,429  27.0 GB written  2992s, ~21298s left
+  25,000/194,863 blocks  height 792,429  28.2 GB written  3140s, ~21338s left
+  26,000/194,863 blocks  height 793,429  29.4 GB written  3278s, ~21287s left
+  27,000/194,863 blocks  height 794,429  30.6 GB written  3413s, ~21218s left
+  28,000/194,863 blocks  height 795,429  31.8 GB written  3548s, ~21143s left
+  29,000/194,863 blocks  height 796,429  33.0 GB written  3696s, ~21139s left
+  30,000/194,863 blocks  height 797,429  34.3 GB written  3845s, ~21130s left
+  31,000/194,863 blocks  height 798,429  35.5 GB written  3999s, ~21136s left
+  32,000/194,863 blocks  height 799,429  36.7 GB written  4154s, ~21140s left
+  33,000/194,863 blocks  height 800,429  38.0 GB written  4291s, ~21048s left
+  34,000/194,863 blocks  height 801,429  39.2 GB written  4425s, ~20937s left
+  35,000/194,863 blocks  height 802,429  40.4 GB written  4565s, ~20853s left
+  36,000/194,863 blocks  height 803,429  41.6 GB written  4704s, ~20759s left
+  37,000/194,863 blocks  height 804,429  42.8 GB written  4842s, ~20660s left
+  38,000/194,863 blocks  height 805,429  44.0 GB written  4983s, ~20569s left
+  39,000/194,863 blocks  height 806,429  45.2 GB written  5122s, ~20469s left
+  40,000/194,863 blocks  height 807,429  46.4 GB written  5260s, ~20364s left
+  41,000/194,863 blocks  height 808,429  47.6 GB written  5415s, ~20322s left
+  42,000/194,863 blocks  height 809,429  48.8 GB written  5552s, ~20206s left
+  43,000/194,863 blocks  height 810,429  50.2 GB written  5689s, ~20093s left
+  44,000/194,863 blocks  height 811,429  51.6 GB written  5821s, ~19960s left
+  45,000/194,863 blocks  height 812,429  53.0 GB written  5954s, ~19827s left
+  46,000/194,863 blocks  height 813,429  54.3 GB written  6085s, ~19691s left
+  47,000/194,863 blocks  height 814,429  55.6 GB written  6236s, ~19617s left
+  48,000/194,863 blocks  height 815,429  56.8 GB written  6391s, ~19553s left
+  49,000/194,863 blocks  height 816,429  58.1 GB written  6544s, ~19479s left
+  50,000/194,863 blocks  height 817,429  59.2 GB written  6704s, ~19423s left
+  51,000/194,863 blocks  height 818,429  60.4 GB written  6856s, ~19340s left
+  52,000/194,863 blocks  height 819,429  61.6 GB written  6995s, ~19218s left
+  53,000/194,863 blocks  height 820,429  62.8 GB written  7147s, ~19130s left
+  54,000/194,863 blocks  height 821,429  64.0 GB written  7321s, ~19098s left
+  55,000/194,863 blocks  height 822,429  65.2 GB written  7486s, ~19038s left
+  56,000/194,863 blocks  height 823,429  66.3 GB written  7656s, ~18985s left
+  57,000/194,863 blocks  height 824,429  67.5 GB written  7816s, ~18904s left
+  58,000/194,863 blocks  height 825,429  68.7 GB written  7991s, ~18857s left
+  59,000/194,863 blocks  height 826,429  69.9 GB written  8150s, ~18769s left
+  60,000/194,863 blocks  height 827,429  71.1 GB written  8293s, ~18640s left
+  61,000/194,863 blocks  height 828,429  72.3 GB written  8459s, ~18563s left
+  62,000/194,863 blocks  height 829,429  73.4 GB written  8589s, ~18406s left
+  63,000/194,863 blocks  height 830,429  74.7 GB written  8730s, ~18273s left
+  64,000/194,863 blocks  height 831,429  75.9 GB written  8889s, ~18175s left
+  65,000/194,863 blocks  height 832,429  77.1 GB written  9042s, ~18066s left
+  66,000/194,863 blocks  height 833,429  78.4 GB written  9193s, ~17949s left
+  67,000/194,863 blocks  height 834,429  79.6 GB written  9350s, ~17844s left
+  68,000/194,863 blocks  height 835,429  80.9 GB written  9504s, ~17731s left
+  69,000/194,863 blocks  height 836,429  82.2 GB written  9636s, ~17578s left
+  70,000/194,863 blocks  height 837,429  83.4 GB written  9784s, ~17452s left
+  71,000/194,863 blocks  height 838,429  84.6 GB written  9927s, ~17318s left
+  72,000/194,863 blocks  height 839,429  85.8 GB written  10074s, ~17191s left
+  73,000/194,863 blocks  height 840,429  87.0 GB written  10212s, ~17047s left
+  74,000/194,863 blocks  height 841,429  88.3 GB written  10352s, ~16908s left
+  75,000/194,863 blocks  height 842,429  89.7 GB written  10496s, ~16774s left
+  76,000/194,863 blocks  height 843,429  91.1 GB written  10639s, ~16639s left
+  77,000/194,863 blocks  height 844,429  92.4 GB written  10776s, ~16495s left
+  78,000/194,863 blocks  height 845,429  93.8 GB written  10936s, ~16385s left
+  79,000/194,863 blocks  height 846,429  95.2 GB written  11099s, ~16278s left
+  80,000/194,863 blocks  height 847,429  96.5 GB written  11247s, ~16148s left
+  81,000/194,863 blocks  height 848,429  97.8 GB written  11397s, ~16021s left
+  82,000/194,863 blocks  height 849,429  99.2 GB written  11541s, ~15885s left
+  83,000/194,863 blocks  height 850,429  100.7 GB written  11692s, ~15758s left
+  84,000/194,863 blocks  height 851,429  102.1 GB written  11833s, ~15617s left
+  85,000/194,863 blocks  height 852,429  103.5 GB written  11978s, ~15482s left
+  86,000/194,863 blocks  height 853,429  104.9 GB written  12123s, ~15346s left
+  87,000/194,863 blocks  height 854,429  106.4 GB written  12275s, ~15219s left
+  88,000/194,863 blocks  height 855,429  107.8 GB written  12428s, ~15092s left
+  89,000/194,863 blocks  height 856,429  109.2 GB written  12563s, ~14943s left
+  90,000/194,863 blocks  height 857,429  110.5 GB written  12732s, ~14835s left
+  91,000/194,863 blocks  height 858,429  112.0 GB written  12903s, ~14727s left
+  92,000/194,863 blocks  height 859,429  113.4 GB written  13067s, ~14609s left
+  93,000/194,863 blocks  height 860,429  114.8 GB written  13215s, ~14474s left
+  94,000/194,863 blocks  height 861,429  116.3 GB written  13375s, ~14352s left
+  95,000/194,863 blocks  height 862,429  117.7 GB written  13531s, ~14223s left
+  96,000/194,863 blocks  height 863,429  119.1 GB written  13689s, ~14097s left
+  97,000/194,863 blocks  height 864,429  120.5 GB written  13848s, ~13972s left
+  98,000/194,863 blocks  height 865,429  122.0 GB written  14005s, ~13843s left
+  99,000/194,863 blocks  height 866,429  123.3 GB written  14146s, ~13698s left
+  100,000/194,863 blocks  height 867,429  124.7 GB written  14285s, ~13551s left
+  101,000/194,863 blocks  height 868,429  126.1 GB written  14428s, ~13409s left
+  102,000/194,863 blocks  height 869,429  127.6 GB written  14565s, ~13261s left
+  103,000/194,863 blocks  height 870,429  129.0 GB written  14698s, ~13109s left
+  104,000/194,863 blocks  height 871,429  130.3 GB written  14845s, ~12970s left
+  105,000/194,863 blocks  height 872,429  131.7 GB written  14981s, ~12822s left
+  106,000/194,863 blocks  height 873,429  133.0 GB written  15107s, ~12664s left
+  107,000/194,863 blocks  height 874,429  134.3 GB written  15238s, ~12513s left
+  108,000/194,863 blocks  height 875,429  135.6 GB written  15383s, ~12372s left
+  109,000/194,863 blocks  height 876,429  136.9 GB written  15517s, ~12223s left
+  110,000/194,863 blocks  height 877,429  138.2 GB written  15660s, ~12081s left
+  111,000/194,863 blocks  height 878,429  139.5 GB written  15813s, ~11947s left
+  112,000/194,863 blocks  height 879,429  140.8 GB written  15957s, ~11806s left
+  113,000/194,863 blocks  height 880,429  142.2 GB written  16104s, ~11667s left
+  114,000/194,863 blocks  height 881,429  143.6 GB written  16255s, ~11530s left
+  115,000/194,863 blocks  height 882,429  145.0 GB written  16392s, ~11384s left
+  116,000/194,863 blocks  height 883,429  146.3 GB written  16540s, ~11245s left
+  117,000/194,863 blocks  height 884,429  147.7 GB written  16694s, ~11109s left
+  118,000/194,863 blocks  height 885,429  148.9 GB written  16847s, ~10974s left
+  119,000/194,863 blocks  height 886,429  150.4 GB written  16993s, ~10833s left
+  120,000/194,863 blocks  height 887,429  151.8 GB written  17140s, ~10693s left
+  121,000/194,863 blocks  height 888,429  153.1 GB written  17275s, ~10545s left
+  122,000/194,863 blocks  height 889,429  154.3 GB written  17405s, ~10395s left
+  123,000/194,863 blocks  height 890,429  155.6 GB written  17537s, ~10246s left
+  124,000/194,863 blocks  height 891,429  156.7 GB written  17646s, ~10084s left
+  125,000/194,863 blocks  height 892,429  157.9 GB written  17764s, ~9928s left
+  126,000/194,863 blocks  height 893,429  159.1 GB written  17908s, ~9787s left
+  127,000/194,863 blocks  height 894,429  160.5 GB written  18044s, ~9642s left
+  128,000/194,863 blocks  height 895,429  161.7 GB written  18174s, ~9493s left
+  129,000/194,863 blocks  height 896,429  163.0 GB written  18298s, ~9342s left
+  130,000/194,863 blocks  height 897,429  164.2 GB written  18426s, ~9193s left
+  131,000/194,863 blocks  height 898,429  165.5 GB written  18574s, ~9055s left
+  132,000/194,863 blocks  height 899,429  166.7 GB written  18696s, ~8904s left
+  133,000/194,863 blocks  height 900,429  167.8 GB written  18817s, ~8753s left
+  134,000/194,863 blocks  height 901,429  169.0 GB written  18938s, ~8601s left
+  135,000/194,863 blocks  height 902,429  170.2 GB written  19073s, ~8457s left
+  136,000/194,863 blocks  height 903,429  171.5 GB written  19215s, ~8316s left
+  137,000/194,863 blocks  height 904,429  172.6 GB written  19336s, ~8167s left
+  138,000/194,863 blocks  height 905,429  173.8 GB written  19453s, ~8016s left
+  139,000/194,863 blocks  height 906,429  175.0 GB written  19577s, ~7868s left
+  140,000/194,863 blocks  height 907,429  176.2 GB written  19696s, ~7719s left
+  141,000/194,863 blocks  height 908,429  177.5 GB written  19825s, ~7573s left
+  142,000/194,863 blocks  height 909,429  178.8 GB written  19942s, ~7424s left
+  143,000/194,863 blocks  height 910,429  180.1 GB written  20062s, ~7276s left
+  144,000/194,863 blocks  height 911,429  181.3 GB written  20185s, ~7130s left
+  145,000/194,863 blocks  height 912,429  182.6 GB written  20306s, ~6983s left
+  146,000/194,863 blocks  height 913,429  183.9 GB written  20427s, ~6837s left
+  147,000/194,863 blocks  height 914,429  185.1 GB written  20540s, ~6688s left
+  148,000/194,863 blocks  height 915,429  186.3 GB written  20660s, ~6542s left
+  149,000/194,863 blocks  height 916,429  187.6 GB written  20779s, ~6396s left
+  150,000/194,863 blocks  height 917,429  188.9 GB written  20902s, ~6252s left
+  151,000/194,863 blocks  height 918,429  190.2 GB written  21030s, ~6109s left
+  152,000/194,863 blocks  height 919,429  191.4 GB written  21157s, ~5966s left
+  153,000/194,863 blocks  height 920,429  192.6 GB written  21282s, ~5823s left
+  154,000/194,863 blocks  height 921,429  193.8 GB written  21410s, ~5681s left
+  155,000/194,863 blocks  height 922,429  195.0 GB written  21536s, ~5539s left
+  156,000/194,863 blocks  height 923,429  196.3 GB written  21665s, ~5397s left
+  157,000/194,863 blocks  height 924,429  197.6 GB written  21799s, ~5257s left
+  158,000/194,863 blocks  height 925,429  198.9 GB written  21931s, ~5117s left
+  159,000/194,863 blocks  height 926,429  200.2 GB written  22071s, ~4978s left
+  160,000/194,863 blocks  height 927,429  201.4 GB written  22196s, ~4836s left
+  161,000/194,863 blocks  height 928,429  202.7 GB written  22311s, ~4693s left
+  162,000/194,863 blocks  height 929,429  203.9 GB written  22428s, ~4550s left
+  163,000/194,863 blocks  height 930,429  205.1 GB written  22548s, ~4408s left
+  164,000/194,863 blocks  height 931,429  206.3 GB written  22668s, ~4266s left
+  165,000/194,863 blocks  height 932,429  207.5 GB written  22782s, ~4123s left
+  166,000/194,863 blocks  height 933,429  208.7 GB written  22895s, ~3981s left
+  167,000/194,863 blocks  height 934,429  210.0 GB written  23010s, ~3839s left
+  168,000/194,863 blocks  height 935,429  211.2 GB written  23127s, ~3698s left
+  169,000/194,863 blocks  height 936,429  212.3 GB written  23241s, ~3557s left
+  170,000/194,863 blocks  height 937,429  213.5 GB written  23368s, ~3418s left
+  171,000/194,863 blocks  height 938,429  214.6 GB written  23493s, ~3278s left
+  172,000/194,863 blocks  height 939,429  215.8 GB written  23615s, ~3139s left
+  173,000/194,863 blocks  height 940,429  217.1 GB written  23747s, ~3001s left
+  174,000/194,863 blocks  height 941,429  218.3 GB written  23879s, ~2863s left
+  175,000/194,863 blocks  height 942,429  219.6 GB written  24014s, ~2726s left
+  176,000/194,863 blocks  height 943,429  221.0 GB written  24153s, ~2589s left
+  177,000/194,863 blocks  height 944,429  222.3 GB written  24284s, ~2451s left
+  178,000/194,863 blocks  height 945,429  223.6 GB written  24419s, ~2313s left
+  179,000/194,863 blocks  height 946,429  224.9 GB written  24557s, ~2176s left
+  180,000/194,863 blocks  height 947,429  226.2 GB written  24693s, ~2039s left
+  181,000/194,863 blocks  height 948,429  227.6 GB written  24811s, ~1900s left
+  182,000/194,863 blocks  height 949,429  229.0 GB written  24939s, ~1763s left
+  183,000/194,863 blocks  height 950,429  230.4 GB written  25066s, ~1625s left
+  184,000/194,863 blocks  height 951,429  231.8 GB written  25192s, ~1487s left
+  185,000/194,863 blocks  height 952,429  233.2 GB written  25321s, ~1350s left
+  186,000/194,863 blocks  height 953,429  234.7 GB written  25451s, ~1213s left
+  187,000/194,863 blocks  height 954,429  236.2 GB written  25580s, ~1076s left
+  188,000/194,863 blocks  height 955,429  237.6 GB written  25712s, ~939s left
+  189,000/194,863 blocks  height 956,429  239.0 GB written  25860s, ~802s left
+  190,000/194,863 blocks  height 957,429  240.5 GB written  26003s, ~666s left
+  191,000/194,863 blocks  height 958,429  241.9 GB written  26134s, ~529s left
+  192,000/194,863 blocks  height 959,429  243.4 GB written  26266s, ~392s left
+  193,000/194,863 blocks  height 960,429  244.8 GB written  26391s, ~255s left
+  194,000/194,863 blocks  height 961,429  246.2 GB written  26539s, ~118s left
+  194,863/194,863 blocks  height 962,292  247.4 GB written  26662s, ~0s left
+
+==================================================================
+wrote blocks 767,430 .. 962,292 to /home/umbrel/mstore
+==================================================================
+elapsed               26661.9s
+transactions whole    507,173,533
+             modified 121,599,086
+             stripped 615
+filter entries        806,626
+
+spam removed
+  inscription witness 37.1 GB
+  OP_RETURN >limit    12.3 MB
+  data multisig       77.5 MB
+  oversized scriptSig 13.8 KB
+  total               37.2 GB
+
+dust outputs found    127,021,924  (retained in blocks, excluded from chainstate)
+
+original blocks       296.2 GB
+monetary store        247.4 GB   (83.54%)
+saved                 48.7 GB   (16.46%)
+
+merkle verified in memory  194,863 ok, 0 failed
+
+now verifying from disk, reading nothing but the store...
+
+verified from disk in 12487.9s
+  blocks verified     194,863
+  blocks failed       0
+  records corrupt     0
+  filter entries      806,626
+
+All 194,863 blocks were reconstructed from the monetary store
+alone and verified against their own headers. The store is
+sufficient: every block remains provably part of the chain
+with all spam removed.

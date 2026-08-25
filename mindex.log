@@ -1,0 +1,137 @@
+nohup: ignoring input
+block files      5714  (763.0 GB)
+already cached   500
+to scan          5214
+blocksdir is XOR-obfuscated; handled
+
+  50/5214  417,129 blocks  read 0.08 GB of 6.7 GB span (1.15%)  3.6 MB/s  21s elapsed, ~36m42s left
+  100/5214  425,560 blocks  read 0.15 GB of 13.4 GB span (1.11%)  4.7 MB/s  31s elapsed, ~27m02s left
+  150/5214  434,259 blocks  read 0.21 GB of 20.1 GB span (1.04%)  5.0 MB/s  42s elapsed, ~23m42s left
+  200/5214  442,046 blocks  read 0.25 GB of 26.8 GB span (0.93%)  4.9 MB/s  50s elapsed, ~21m01s left
+  checkpoint saved (449,829 blocks)
+  250/5214  449,829 blocks  read 0.29 GB of 33.4 GB span (0.87%)  4.9 MB/s  59s elapsed, ~19m46s left
+  300/5214  456,851 blocks  read 0.32 GB of 40.1 GB span (0.79%)  4.8 MB/s  1m06s elapsed, ~18m05s left
+  350/5214  463,888 blocks  read 0.34 GB of 46.8 GB span (0.73%)  4.7 MB/s  1m13s elapsed, ~16m57s left
+  400/5214  470,749 blocks  read 0.37 GB of 53.5 GB span (0.69%)  4.6 MB/s  1m19s elapsed, ~15m59s left
+  450/5214  478,034 blocks  read 0.39 GB of 60.2 GB span (0.65%)  4.5 MB/s  1m26s elapsed, ~15m19s left
+  checkpoint saved (485,492 blocks)
+  500/5214  485,492 blocks  read 0.43 GB of 66.9 GB span (0.64%)  4.4 MB/s  1m35s elapsed, ~15m02s left
+  550/5214  492,823 blocks  read 0.47 GB of 73.6 GB span (0.63%)  4.5 MB/s  1m44s elapsed, ~14m45s left
+  600/5214  499,203 blocks  read 0.48 GB of 80.2 GB span (0.60%)  4.4 MB/s  1m50s elapsed, ~14m06s left
+  650/5214  505,534 blocks  read 0.50 GB of 86.9 GB span (0.57%)  4.3 MB/s  1m55s elapsed, ~13m31s left
+  700/5214  512,123 blocks  read 0.52 GB of 93.6 GB span (0.55%)  4.2 MB/s  2m01s elapsed, ~13m05s left
+  checkpoint saved (520,933 blocks)
+  750/5214  520,933 blocks  read 0.59 GB of 100.3 GB span (0.59%)  4.4 MB/s  2m14s elapsed, ~13m22s left
+  800/5214  529,708 blocks  read 0.67 GB of 107.0 GB span (0.62%)  4.6 MB/s  2m26s elapsed, ~13m27s left
+  850/5214  537,789 blocks  read 0.73 GB of 113.7 GB span (0.64%)  4.7 MB/s  2m36s elapsed, ~13m24s left
+  900/5214  545,829 blocks  read 0.82 GB of 120.4 GB span (0.68%)  4.9 MB/s  2m48s elapsed, ~13m26s left
+  950/5214  552,302 blocks  read 0.85 GB of 127.0 GB span (0.67%)  4.9 MB/s  2m55s elapsed, ~13m05s left
+  checkpoint saved (559,236 blocks)
+  1000/5214  559,236 blocks  read 0.88 GB of 133.7 GB span (0.66%)  4.8 MB/s  3m03s elapsed, ~12m54s left
+  1050/5214  565,680 blocks  read 0.91 GB of 140.4 GB span (0.65%)  4.8 MB/s  3m10s elapsed, ~12m34s left
+  1100/5214  571,851 blocks  read 0.93 GB of 147.1 GB span (0.64%)  4.8 MB/s  3m16s elapsed, ~12m14s left
+  1150/5214  577,382 blocks  read 0.94 GB of 153.8 GB span (0.61%)  4.7 MB/s  3m21s elapsed, ~11m50s left
+  1200/5214  582,901 blocks  read 0.96 GB of 160.5 GB span (0.60%)  4.6 MB/s  3m25s elapsed, ~11m28s left
+  checkpoint saved (589,152 blocks)
+  1250/5214  589,152 blocks  read 0.97 GB of 167.1 GB span (0.58%)  4.6 MB/s  3m32s elapsed, ~11m15s left
+  1300/5214  595,680 blocks  read 1.00 GB of 173.8 GB span (0.57%)  4.5 MB/s  3m39s elapsed, ~11m01s left
+  1350/5214  602,199 blocks  read 1.02 GB of 180.5 GB span (0.57%)  4.5 MB/s  3m46s elapsed, ~10m47s left
+  1400/5214  608,538 blocks  read 1.04 GB of 187.2 GB span (0.56%)  4.5 MB/s  3m52s elapsed, ~10m32s left
+  1450/5214  615,512 blocks  read 1.07 GB of 193.9 GB span (0.55%)  4.5 MB/s  3m59s elapsed, ~10m22s left
+  checkpoint saved (621,569 blocks)
+  1500/5214  621,569 blocks  read 1.09 GB of 200.5 GB span (0.55%)  4.4 MB/s  4m07s elapsed, ~10m11s left
+  1550/5214  627,782 blocks  read 1.11 GB of 207.2 GB span (0.54%)  4.4 MB/s  4m13s elapsed, ~9m58s left
+  1600/5214  633,069 blocks  read 1.12 GB of 213.9 GB span (0.52%)  4.4 MB/s  4m17s elapsed, ~9m41s left
+  1650/5214  638,932 blocks  read 1.14 GB of 220.6 GB span (0.52%)  4.3 MB/s  4m22s elapsed, ~9m27s left
+  1700/5214  644,159 blocks  read 1.15 GB of 227.2 GB span (0.50%)  4.3 MB/s  4m27s elapsed, ~9m12s left
+  checkpoint saved (649,517 blocks)
+  1750/5214  649,517 blocks  read 1.16 GB of 233.9 GB span (0.50%)  4.2 MB/s  4m33s elapsed, ~9m01s left
+  1800/5214  654,853 blocks  read 1.17 GB of 240.6 GB span (0.48%)  4.2 MB/s  4m37s elapsed, ~8m47s left
+  1850/5214  660,121 blocks  read 1.18 GB of 247.3 GB span (0.48%)  4.2 MB/s  4m42s elapsed, ~8m33s left
+  1900/5214  665,300 blocks  read 1.19 GB of 254.0 GB span (0.47%)  4.1 MB/s  4m46s elapsed, ~8m20s left
+  1950/5214  670,399 blocks  read 1.19 GB of 260.6 GB span (0.46%)  4.1 MB/s  4m51s elapsed, ~8m07s left
+  checkpoint saved (675,443 blocks)
+  2000/5214  675,443 blocks  read 1.20 GB of 267.3 GB span (0.45%)  4.0 MB/s  4m56s elapsed, ~7m57s left
+  2050/5214  680,457 blocks  read 1.21 GB of 274.0 GB span (0.44%)  4.0 MB/s  5m01s elapsed, ~7m46s left
+  2100/5214  685,427 blocks  read 1.22 GB of 280.7 GB span (0.43%)  4.0 MB/s  5m06s elapsed, ~7m33s left
+  2150/5214  690,688 blocks  read 1.23 GB of 287.4 GB span (0.43%)  3.9 MB/s  5m10s elapsed, ~7m23s left
+  2200/5214  697,389 blocks  read 1.27 GB of 294.0 GB span (0.43%)  4.0 MB/s  5m18s elapsed, ~7m16s left
+  checkpoint saved (703,545 blocks)
+  2250/5214  703,545 blocks  read 1.29 GB of 300.7 GB span (0.43%)  4.0 MB/s  5m26s elapsed, ~7m10s left
+  2300/5214  709,131 blocks  read 1.31 GB of 307.4 GB span (0.43%)  3.9 MB/s  5m32s elapsed, ~7m00s left
+  2350/5214  714,859 blocks  read 1.34 GB of 314.1 GB span (0.43%)  4.0 MB/s  5m38s elapsed, ~6m51s left
+  2400/5214  720,747 blocks  read 1.36 GB of 320.8 GB span (0.42%)  4.0 MB/s  5m44s elapsed, ~6m43s left
+  2450/5214  726,290 blocks  read 1.39 GB of 327.4 GB span (0.42%)  4.0 MB/s  5m50s elapsed, ~6m35s left
+  checkpoint saved (732,040 blocks)
+  2500/5214  732,040 blocks  read 1.42 GB of 334.1 GB span (0.42%)  4.0 MB/s  5m58s elapsed, ~6m28s left
+  2550/5214  737,596 blocks  read 1.44 GB of 340.8 GB span (0.42%)  3.9 MB/s  6m03s elapsed, ~6m20s left
+  2600/5214  743,176 blocks  read 1.46 GB of 347.5 GB span (0.42%)  3.9 MB/s  6m09s elapsed, ~6m11s left
+  2650/5214  748,876 blocks  read 1.49 GB of 354.1 GB span (0.42%)  4.0 MB/s  6m15s elapsed, ~6m03s left
+  2700/5214  754,629 blocks  read 1.52 GB of 360.8 GB span (0.42%)  4.0 MB/s  6m22s elapsed, ~5m56s left
+  checkpoint saved (760,454 blocks)
+  2750/5214  760,454 blocks  read 1.55 GB of 367.5 GB span (0.42%)  4.0 MB/s  6m30s elapsed, ~5m49s left
+  2800/5214  765,638 blocks  read 1.56 GB of 374.2 GB span (0.42%)  3.9 MB/s  6m35s elapsed, ~5m40s left
+  2850/5214  771,369 blocks  read 1.58 GB of 380.8 GB span (0.42%)  3.9 MB/s  6m41s elapsed, ~5m32s left
+  2900/5214  776,071 blocks  read 1.59 GB of 387.5 GB span (0.41%)  3.9 MB/s  6m45s elapsed, ~5m23s left
+  2950/5214  779,270 blocks  read 1.60 GB of 394.2 GB span (0.41%)  3.9 MB/s  6m48s elapsed, ~5m13s left
+  checkpoint saved (782,463 blocks)
+  3000/5214  782,463 blocks  read 1.60 GB of 400.8 GB span (0.40%)  3.9 MB/s  6m52s elapsed, ~5m04s left
+  3050/5214  785,999 blocks  read 1.61 GB of 407.5 GB span (0.39%)  3.9 MB/s  6m55s elapsed, ~4m54s left
+  3100/5214  789,996 blocks  read 1.61 GB of 414.1 GB span (0.39%)  3.8 MB/s  6m58s elapsed, ~4m45s left
+  3150/5214  793,867 blocks  read 1.61 GB of 420.8 GB span (0.38%)  3.8 MB/s  7m01s elapsed, ~4m36s left
+  3200/5214  797,721 blocks  read 1.61 GB of 427.5 GB span (0.38%)  3.8 MB/s  7m05s elapsed, ~4m27s left
+  checkpoint saved (801,709 blocks)
+  3250/5214  801,709 blocks  read 1.62 GB of 434.1 GB span (0.37%)  3.8 MB/s  7m10s elapsed, ~4m19s left
+  3300/5214  805,726 blocks  read 1.62 GB of 440.8 GB span (0.37%)  3.7 MB/s  7m13s elapsed, ~4m11s left
+  3350/5214  809,733 blocks  read 1.62 GB of 447.5 GB span (0.36%)  3.7 MB/s  7m16s elapsed, ~4m02s left
+  3400/5214  813,718 blocks  read 1.62 GB of 454.1 GB span (0.36%)  3.7 MB/s  7m19s elapsed, ~3m54s left
+  3450/5214  817,725 blocks  read 1.63 GB of 460.8 GB span (0.35%)  3.7 MB/s  7m22s elapsed, ~3m46s left
+  checkpoint saved (821,655 blocks)
+  3500/5214  821,655 blocks  read 1.63 GB of 467.5 GB span (0.35%)  3.6 MB/s  7m28s elapsed, ~3m39s left
+  3550/5214  825,540 blocks  read 1.64 GB of 474.2 GB span (0.35%)  3.6 MB/s  7m31s elapsed, ~3m31s left
+  3600/5214  829,550 blocks  read 1.64 GB of 480.8 GB span (0.34%)  3.6 MB/s  7m34s elapsed, ~3m23s left
+  3650/5214  833,270 blocks  read 1.64 GB of 487.5 GB span (0.34%)  3.6 MB/s  7m37s elapsed, ~3m16s left
+  3700/5214  837,029 blocks  read 1.65 GB of 494.1 GB span (0.33%)  3.6 MB/s  7m40s elapsed, ~3m08s left
+  checkpoint saved (840,784 blocks)
+  3750/5214  840,784 blocks  read 1.65 GB of 500.8 GB span (0.33%)  3.5 MB/s  7m45s elapsed, ~3m01s left
+  3800/5214  844,906 blocks  read 1.65 GB of 507.5 GB span (0.33%)  3.5 MB/s  7m49s elapsed, ~2m54s left
+  3850/5214  849,208 blocks  read 1.66 GB of 514.1 GB span (0.32%)  3.5 MB/s  7m52s elapsed, ~2m47s left
+  3900/5214  853,378 blocks  read 1.66 GB of 520.8 GB span (0.32%)  3.5 MB/s  7m56s elapsed, ~2m40s left
+  3950/5214  857,446 blocks  read 1.67 GB of 527.5 GB span (0.32%)  3.5 MB/s  7m59s elapsed, ~2m33s left
+  checkpoint saved (861,500 blocks)
+  4000/5214  861,500 blocks  read 1.67 GB of 534.2 GB span (0.31%)  3.4 MB/s  8m04s elapsed, ~2m27s left
+  4050/5214  865,558 blocks  read 1.67 GB of 540.8 GB span (0.31%)  3.4 MB/s  8m07s elapsed, ~2m20s left
+  4100/5214  869,563 blocks  read 1.68 GB of 547.5 GB span (0.31%)  3.4 MB/s  8m11s elapsed, ~2m13s left
+  4150/5214  873,746 blocks  read 1.68 GB of 554.2 GB span (0.30%)  3.4 MB/s  8m14s elapsed, ~2m06s left
+  4200/5214  877,840 blocks  read 1.68 GB of 560.8 GB span (0.30%)  3.4 MB/s  8m17s elapsed, ~2m00s left
+  checkpoint saved (881,651 blocks)
+  4250/5214  881,651 blocks  read 1.69 GB of 567.5 GB span (0.30%)  3.4 MB/s  8m22s elapsed, ~1m54s left
+  4300/5214  885,519 blocks  read 1.69 GB of 574.2 GB span (0.29%)  3.3 MB/s  8m25s elapsed, ~1m47s left
+  4350/5214  889,542 blocks  read 1.69 GB of 580.8 GB span (0.29%)  3.3 MB/s  8m28s elapsed, ~1m41s left
+  4400/5214  893,945 blocks  read 1.70 GB of 587.5 GB span (0.29%)  3.3 MB/s  8m32s elapsed, ~1m34s left
+  4450/5214  897,986 blocks  read 1.71 GB of 594.2 GB span (0.29%)  3.3 MB/s  8m36s elapsed, ~1m28s left
+  checkpoint saved (902,632 blocks)
+  4500/5214  902,632 blocks  read 1.72 GB of 600.8 GB span (0.29%)  3.3 MB/s  8m42s elapsed, ~1m22s left
+  4550/5214  907,170 blocks  read 1.72 GB of 607.5 GB span (0.28%)  3.3 MB/s  8m46s elapsed, ~1m16s left
+  4600/5214  911,197 blocks  read 1.73 GB of 614.2 GB span (0.28%)  3.3 MB/s  8m50s elapsed, ~1m10s left
+  4650/5214  915,514 blocks  read 1.74 GB of 620.8 GB span (0.28%)  3.3 MB/s  8m53s elapsed, ~1m04s left
+  4700/5214  920,021 blocks  read 1.75 GB of 627.5 GB span (0.28%)  3.3 MB/s  8m57s elapsed, ~58s left
+  checkpoint saved (924,400 blocks)
+  4750/5214  924,400 blocks  read 1.75 GB of 634.2 GB span (0.28%)  3.2 MB/s  9m03s elapsed, ~53s left
+  4800/5214  928,714 blocks  read 1.76 GB of 640.8 GB span (0.27%)  3.2 MB/s  9m07s elapsed, ~47s left
+  4850/5214  933,015 blocks  read 1.77 GB of 647.5 GB span (0.27%)  3.2 MB/s  9m11s elapsed, ~41s left
+  4900/5214  937,146 blocks  read 1.78 GB of 654.2 GB span (0.27%)  3.2 MB/s  9m15s elapsed, ~35s left
+  4950/5214  941,427 blocks  read 1.79 GB of 660.8 GB span (0.27%)  3.2 MB/s  9m18s elapsed, ~29s left
+  checkpoint saved (945,528 blocks)
+  5000/5214  945,528 blocks  read 1.79 GB of 667.5 GB span (0.27%)  3.2 MB/s  9m24s elapsed, ~24s left
+  5050/5214  949,730 blocks  read 1.80 GB of 674.1 GB span (0.27%)  3.2 MB/s  9m28s elapsed, ~18s left
+  5100/5214  953,927 blocks  read 1.80 GB of 680.8 GB span (0.26%)  3.2 MB/s  9m31s elapsed, ~12s left
+  5150/5214  958,101 blocks  read 1.81 GB of 687.5 GB span (0.26%)  3.1 MB/s  9m34s elapsed, ~7s left
+  5200/5214  962,223 blocks  read 1.81 GB of 694.1 GB span (0.26%)  3.1 MB/s  9m38s elapsed, ~1s left
+  5214/5214  963,373 blocks  read 1.81 GB of 696.0 GB span (0.26%)  3.1 MB/s  9m39s elapsed, ~0s left
+
+index complete: 963,373 blocks in 9m41s
+read 1.81 GB of 696.0 GB on disk
+cached to /home/umbrel/.monetary_index.bin
+
+monetary_store.py will now start without re-indexing.
