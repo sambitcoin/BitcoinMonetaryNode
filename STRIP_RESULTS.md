@@ -176,6 +176,110 @@ commitment C (`monetary_commit.py`).
 Format specification in `FORMAT.md`; 42-check verification suite in
 `test_monetary_store.py`.
 
+## Dropped outputs remain spendable — verified cryptographically
+
+The design deletes spam outputs from block storage and keeps a filter entry for
+each: outpoint, amount, scriptPubKey, height. Everything rests on that entry
+being genuinely sufficient to validate a later spend. If it is not, outputs are
+stranded and the node has to ask a peer.
+
+Across all 194,863 blocks:
+
+| | |
+|---|---|
+| Dropped outputs | 806,626 |
+| **Ever spent** | **7** |
+| Spends whose filter entry was present | **7 of 7** |
+| Spends whose signatures were re-verified | **6 of 7** |
+| Value-conservation checks passed | 2 of 2 |
+
+Each verified spend had its scriptPubKey **deleted from block storage** and
+recovered from the filter index; the ECDSA signature was then checked against
+that recovered script and passed. One was a 2-of-2 requiring both keys. Three
+were separate inputs of a single consolidation at height 899,058.
+
+secp256k1 and the legacy sighash algorithm were implemented from scratch for
+this check (`spend_check.py`, 21 self-tests including a full sign-then-verify
+cycle). It is a property test, not a consensus validator — a monetary node
+validates through Bitcoin Knots.
+
+### Spam outputs are almost never spent
+
+**7 of 806,626 — about one in 115,000.**
+
+This is a measured distinction between money and data rather than an assertion
+about it. Monetary outputs get spent because someone wants the coins. Data
+carriers sit forever because nobody ever wanted the coins, only the bytes.
+
+It also prices the anti-confiscation guarantee. Keeping every dropped output
+spendable costs 806,626 filter entries, roughly 66 MB, of which seven were ever
+read. That is the entire cost of stranding nobody.
+
+### The one failure, and what it means
+
+The seventh spend could not have its signature re-verified. The cause is
+structural rather than a defect, and it bounds a claim that was previously
+stated too loosely.
+
+`SIGHASH_ALL` signs the spending transaction's **outputs** as well as its
+inputs. Transaction `9d545d49…` at height 810,262 spent a bare multisig output
+*and created another one* — a 137-byte multisig at vout 0. The stripper removed
+that output, so the signed preimage can no longer be reconstructed. The
+signature is valid; the data required to check it is gone.
+
+Stamps transactions consume and produce bare multisig outputs by design, so
+they are exactly the transactions this affects.
+
+**The precise statement is therefore:**
+
+- Transactions retained whole — **507,173,533, or 80.66%** — keep full
+  signature re-verifiability.
+- Transactions modified or stripped — **121,599,701, or 19.34%** — do not,
+  because the stripper removed outputs their own signatures commit to.
+
+This is narrower than "stripped transactions cannot be re-verified" and should
+be stated in these terms. It does not affect validity: every one of these
+transactions was fully validated once, by Knots, when its block was connected.
+It affects only the ability to re-check them afterwards.
+
+## Wallets still work
+
+Spam removal that breaks balances or transaction history would be a storage
+experiment, not a node. So the store was checked against an independent
+Electrum server — a different implementation, reading complete block data,
+sharing no code or configuration with this project.
+
+40 addresses sampled from block 900,500, checked against the monetary store for
+blocks 900,000–902,000:
+
+| | |
+|---|---|
+| Addresses compared successfully | 36 |
+| **In-range history identical** | **32** |
+| Differed | 4 |
+| Transactions the store invented | **0** |
+| Fully stripped transactions encountered | 0 |
+
+Four queries were refused by the reference server itself (`Too many history
+entries` on addresses with 30,000+ transactions) and are excluded rather than
+counted either way.
+
+**The four differences are a scanning artifact, not a storage defect**, and this
+was verified rather than assumed. The checker learns an outpoint exists only
+when it sees the output created, so a spend of an output funded *before* the
+scanned range cannot be attributed to that address. All four were addresses with
+long histories predating block 900,000. Taking the simplest case — transaction
+`cdb32a8d…` at height 900,049, reported missing — its input was created at
+height **899,950**, fifty blocks before the scan began. The store holds the
+transaction; the checker had no way to know the input belonged to that address.
+
+Every completed comparison whose history fell entirely inside the range matched
+exactly, and in no case did the store report a transaction the reference did not
+have.
+
+Tool: `wallet_check.py`. 11 protocol and parsing checks (BIP173 and BIP350 test
+vectors included) plus 9 store-logic checks, all passing.
+
 ## What is stripped
 
 **Inscription envelopes** — data pushed inside unexecutable branches of taproot
@@ -227,8 +331,11 @@ measurement of inscription activity.
 **Legacy node service.** A node storing stripped blocks cannot serve initial
 block download to a conventional full node, which requires complete block data.
 
-**Re-validation under future rules.** Modified and stripped transactions cannot
-be re-verified. They were validated once, in full, when the block was connected.
+**Re-validation of modified transactions.** The 19.34% of transactions that
+were modified or stripped cannot have their signatures re-checked, because
+`SIGHASH_ALL` commits to outputs the stripper removed. Demonstrated concretely
+above. The 80.66% retained whole are unaffected. All were validated once, in
+full, when their block was connected.
 
 **Wallet history for fully stripped transactions.** 615 transactions were reduced
 to a txid alone, which loses their inputs and so breaks the link from a spent
