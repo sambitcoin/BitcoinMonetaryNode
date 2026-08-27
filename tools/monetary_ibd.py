@@ -403,16 +403,43 @@ class Server:
     """
 
     def __init__(self, store_path, start_height, attack=None):
-        self.records = list(iter_store_records(store_path)) \
-            if isinstance(store_path, str) else list(store_path)
         self.start_height = start_height
         self.attack = attack
+        self.mem = None
+        self.locs = []
+        if isinstance(store_path, str):
+            # Index record locations, do not hold the records. A full store is
+            # hundreds of gigabytes; loading it would exhaust memory before a
+            # single peer connected.
+            for f in sorted(glob.glob(os.path.join(store_path, "mblk*.dat"))):
+                size = os.path.getsize(f)
+                with open(f, "rb") as fh:
+                    pos = 0
+                    while pos < size:
+                        fh.seek(pos + 6)
+                        length = struct.unpack("<I", fh.read(4))[0]
+                        self.locs.append((f, pos, 10 + length))
+                        pos += 10 + length
+        else:
+            self.mem = list(store_path)
+
+    @property
+    def records(self):
+        """Only for the in-memory case used by the test harness."""
+        return self.mem if self.mem is not None else self.locs
+
+    def _read(self, i):
+        if self.mem is not None:
+            return self.mem[i]
+        path, off, length = self.locs[i]
+        with open(path, "rb") as fh:
+            fh.seek(off)
+            return fh.read(length)
 
     def get(self, start, count):
-        i = start - self.start_height
-        if i < 0:
-            i = 0
-        out = self.records[i:i + count]
+        i = max(0, start - self.start_height)
+        n_total = len(self.mem) if self.mem is not None else len(self.locs)
+        out = [self._read(j) for j in range(i, min(i + count, n_total))]
         return [apply_attack(r, self.attack, n) for n, r in enumerate(out)] \
             if self.attack else out
 
