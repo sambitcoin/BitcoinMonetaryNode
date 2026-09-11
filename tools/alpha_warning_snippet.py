@@ -27,8 +27,7 @@ ALPHA_WARNING = """\
 ALPHA SOFTWARE
 
   This is an alpha release. It has not been reviewed or audited by
-  anyone but its author. An earlier version contained a bug that
-  permanently deleted block data from a node.
+  anyone but its author.
 
   Use a node you can afford to lose and re-sync from scratch.
 
