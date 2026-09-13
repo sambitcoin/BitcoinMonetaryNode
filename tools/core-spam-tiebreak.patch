@@ -1,0 +1,125 @@
+diff --git a/src/chain.h b/src/chain.h
+index 1ca2184..afb1098 100644
+--- a/src/chain.h
++++ b/src/chain.h
+@@ -148,6 +148,18 @@ public:
+     //! belonging to the best chain which overwrite it to SEQ_ID_BEST_CHAIN_FROM_DISK{0}.
+     int32_t nSequenceId{SEQ_ID_INIT_FROM_DISK};
+ 
++    //! (memory only) Data-carrier bytes identified in this block, bucketed.
++    //! Used only as an equal-work tiebreak when -spamtiebreak is set; see
++    //! CBlockIndexWorkComparator. Deliberately NOT serialised in
++    //! CDiskBlockIndex: it must not create a downgrade hazard, and it need not
++    //! survive restart because equal-work races resolve within seconds.
++    //!
++    //! MUST be assigned before this index can enter setBlockIndexCandidates,
++    //! and MUST NOT change afterwards: that set is a std::set keyed on this
++    //! comparator, and mutating the ordering of a contained element is
++    //! undefined behaviour.
++    uint32_t m_spam_score{0};
++
+     //! (memory only) Maximum nTime in the chain up to and including this block.
+     unsigned int nTimeMax{0};
+ 
+diff --git a/src/init.cpp b/src/init.cpp
+index da3d41c..0d415be 100644
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -537,6 +537,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
+     argsman.AddArg("-par=<n>", strprintf("Set the number of script verification threads (0 = auto, up to %d, <0 = leave that many cores free, default: %d)",
+         MAX_SCRIPTCHECK_THREADS, DEFAULT_SCRIPTCHECK_THREADS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-prevoutfetchthreads=<n>", strprintf("Set the number of threads used to prefetch block input prevouts from the chainstate database (0 disables, up to %d, default: %d). Negative values are rejected.", MAX_PREVOUTFETCH_THREADS, DEFAULT_PREVOUTFETCH_THREADS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
++    argsman.AddArg("-spamtiebreak", "At equal chain work, prefer the block carrying fewer data-carrier bytes over the one seen first. Policy only: no block is rejected and most-work still decides. Has no effect unless this node mines (default: 0)", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-persistmempool", strprintf("Whether to save the mempool on shutdown and load on restart (default: %u)", DEFAULT_PERSIST_MEMPOOL), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
+     argsman.AddArg("-persistmempoolv1",
+                    strprintf("Whether a mempool.dat file created by -persistmempool or the savemempool RPC will be written in the legacy format "
+diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
+index 8771c35..214351e 100644
+--- a/src/node/blockstorage.cpp
++++ b/src/node/blockstorage.cpp
+@@ -171,12 +171,43 @@ std::string CBlockFileInfo::ToString() const
+ 
+ namespace node {
+ 
++std::atomic<bool> g_spam_tiebreak{false};
++
++uint32_t SpamScore(const CBlock& block)
++{
++    // NOT IMPLEMENTED. Returning 0 makes -spamtiebreak a no-op, which is the
++    // correct behaviour until a classifier is wired in here.
++    //
++    // The intended source is the project's existing carrier classifier
++    // (inscription envelopes, off-curve keys in bare multisig and P2PK,
++    // oversized OP_RETURN), reduced to a small number of buckets rather than
++    // a byte count. It must be deterministic: two nodes scoring the same
++    // block differently would disagree about the tip, which defeats the
++    // purpose.
++    (void)block;
++    return 0;
++}
++
+ bool CBlockIndexWorkComparator::operator()(const CBlockIndex* pa, const CBlockIndex* pb) const
+ {
++    // Note the convention: this returns true when `pa` is WORSE than `pb`.
++    // setBlockIndexCandidates is read via rbegin(), so the greatest element
++    // is the best candidate. Inverting any of these comparisons silently
++    // selects the worse block with no error anywhere.
++
+     // First sort by most total work, ...
+     if (pa->nChainWork > pb->nChainWork) return false;
+     if (pa->nChainWork < pb->nChainWork) return true;
+ 
++    // ... then, if enabled, by data-carrier content: at equal work, prefer
++    // the block carrying less spam. This is policy, not consensus. Both
++    // blocks remain valid and neither is rejected; the moment either chain is
++    // extended the work comparison above decides and this never runs.
++    if (g_spam_tiebreak.load(std::memory_order_relaxed) &&
++        pa->m_spam_score != pb->m_spam_score) {
++        return pa->m_spam_score > pb->m_spam_score;
++    }
++
+     // ... then by earliest activatable time, ...
+     if (pa->nSequenceId < pb->nSequenceId) return false;
+     if (pa->nSequenceId > pb->nSequenceId) return true;
+diff --git a/src/node/blockstorage.h b/src/node/blockstorage.h
+index 8869ee2..b4d5f17 100644
+--- a/src/node/blockstorage.h
++++ b/src/node/blockstorage.h
+@@ -135,6 +135,22 @@ inline constexpr uint32_t UNDO_DATA_DISK_OVERHEAD{STORAGE_HEADER_BYTES + uint256
+ // containers), or make the key a `std::unique_ptr<CBlockIndex>`
+ using BlockMap = std::unordered_map<uint256, CBlockIndex, BlockHasher>;
+ 
++/** When set, equal-work block candidates are ordered by data-carrier content
++ *  before arrival order. Policy only: no block is rejected, and most-work
++ *  still decides as soon as either chain is extended.
++ *
++ *  A global because CBlockIndexWorkComparator is default-constructed at its
++ *  call sites and carries no state. Plumbing it through options would be
++ *  cleaner and is the obvious review comment. */
++extern std::atomic<bool> g_spam_tiebreak;
++
++/** Data-carrier bytes in a block, bucketed coarsely.
++ *
++ *  Coarse on purpose. Ranking by exact byte counts would make chain selection
++ *  sensitive to classifier edge cases; buckets keep a false positive from
++ *  changing the answer unless it is a large one. */
++uint32_t SpamScore(const CBlock& block);
++
+ struct CBlockIndexWorkComparator {
+     bool operator()(const CBlockIndex* pa, const CBlockIndex* pb) const;
+     using is_transparent = void;
+diff --git a/src/validation.cpp b/src/validation.cpp
+index c85a3af..2b494b4 100644
+--- a/src/validation.cpp
++++ b/src/validation.cpp
+@@ -3790,6 +3790,10 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
+     pindexNew->nDataPos = pos.nPos;
+     pindexNew->nUndoPos = 0;
+     pindexNew->nStatus |= BLOCK_HAVE_DATA;
++    // Assign the tiebreak score here, while the full block is in hand and
++    // before this index can be inserted into setBlockIndexCandidates below.
++    // It must never be recomputed: see the note on CBlockIndex::m_spam_score.
++    pindexNew->m_spam_score = node::SpamScore(block);
+     if (DeploymentActiveAt(*pindexNew, *this, Consensus::DEPLOYMENT_SEGWIT)) {
+         pindexNew->nStatus |= BLOCK_OPT_WITNESS;
+     }
