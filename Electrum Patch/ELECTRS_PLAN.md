@@ -1,13 +1,12 @@
-# electrs integration — project plan
+# Indexer integration — project plan
 
 Goal: a wallet user can check balances and send and receive transactions
-against a monetary node, with as little non-standard software as possible.
+against a monetary node, running as little non-standard software as possible.
 
-## A correction, first
+Supersedes an earlier draft of this document, which recommended patching
+electrs. See "A rejection, retracted" below.
 
-I claimed earlier that unmodified electrs would work against a monetary node,
-on the reasoning that the indexer runs ahead of the stripper and never needs
-the deleted data afterwards. **That claim is wrong**, and the source says so.
+## The blocker
 
 `electrs 0.11.1`, `src/daemon.rs:169-176`:
 
@@ -24,156 +23,203 @@ fn rpc_poll(&self, skip_block_download_wait: bool) -> PollResult {
 
 electrs refuses to start against a pruned node. The check runs on every
 connection attempt, before `skip_block_download_wait` is consulted, and no
-config flag bypasses it. `--ignore-mempool` and
-`--skip-block-download-wait` exist; nothing for this.
+config flag bypasses it.
+
+This is not an electrs quirk. Bitcoin Core makes `-prune` incompatible with
+`-txindex`; Fulcrum requires `txindex=1` and a non-pruned node; ElectrumX the
+same. **No Electrum-style indexer works against a pruned node**, because an
+address index must read every transaction that ever existed and a pruned node
+deleted them.
 
 Since `monetary_convert.py` stage 7 prunes the node, electrs would index fine
-right up until the first restart after conversion, then refuse to start —
-with its index intact and useless.
+right up to the first restart after conversion, then refuse to start — with
+its index intact and useless.
 
-I should also retract something I passed on from a web search: that "electrs
-supports pruned nodes, unlike the others." The source contradicts it. I
-repeated a summary without checking, which is the same mistake this project
-has published retractions for before.
+Also worth noting for the local setup: Umbrel's Knots runs with
+`prune=953674`, a target larger than the chain, so nothing is ever actually
+deleted — but `getblockchaininfo` still reports `pruned: true`. That alone
+would make electrs refuse, with every block physically present. It likely
+explains the "Electrum is running but broken" symptom from weeks ago.
 
-**Consequence: there is no zero-patch path.** The objection about a tougher
-sell when users must run a patched electrs alongside a novel node stands, and
-the plan below is about making that patch as small and as defensible as
-possible — not about avoiding it.
+## The reframe that matters
 
-## The critical unknown
+Losing wallet-server capability is an **existing** cost of pruning that
+everyone already accepts. This project does not introduce it — and a monetary
+node is in a strictly better position than a pruned one:
 
-**Does electrs ever re-read a block it has already indexed?**
+| | Pruned node | Monetary node |
+|---|---|---|
+| Old block data | deleted | 87.44% retained |
+| Dropped outputs | gone | filter entries: txid, vout, amount, scriptPubKey, height |
+| Index rebuildable? | **never** | **yes** |
 
-Everything below assumes it does not — that indexing is forward-only and the
-database is authoritative once written. If that assumption is wrong, the
-entire approach fails and the only path is indexing from the monetary store
-directly, which is a far larger change.
+A pruned node can never rebuild an index. A monetary node keeps every monetary
+transaction plus structured records of everything it dropped. The information
+is present; what is missing is tooling that reads it.
 
-Nothing has been verified here. This is phase 1 and it gates everything else.
+"Monetary nodes restore wallet support that pruning takes away" is a stronger
+claim than "we patched an indexer to tolerate pruning", and it is the one the
+format actually supports.
 
-Specifically, what happens on: compaction, reorg deeper than cached state,
-restart with a partially-written database, and `blockchain.transaction.get`
-for an old transaction.
+## A rejection, retracted
 
-That last one is already known to be a problem — a monetary node cannot serve
-raw transaction hex for the 19.34% of transactions that are modified or
-stripped. Whether electrs serves that from its own database or re-fetches from
-the daemon is exactly the kind of thing phase 1 must establish.
+The earlier draft rejected an RPC proxy on the grounds that stripped blocks
+cannot be reconstructed, so a proxy would have to serve blocks that do not
+hash correctly.
 
-## Options considered
+**That was wrong, and it has been tested.**
+
+An indexer needs semantic content — txid, inputs, outputs — not original
+bytes. Witness data is irrelevant to an address index. And `monetary_store.py`
+retains enough to rebuild the rest.
+
+Every dropped output receives a filter entry **unconditionally**. There is no
+"skip provably unspendable" guard, so even OP_RETURN payloads keep their
+scriptPubKey, vout and amount:
+
+```python
+for vout, amount, spk in dropped_outs:
+    filter_entries.append((txid, vout, amount, height, spk))
+```
+
+Reconstructing a modified transaction — version, inputs and locktime from the
+stored body, outputs merged from the retained ones plus filter entries placed
+at their recorded vouts — reproduces the original **byte for byte**:
+
+    classification: whole=0 modified=1 stripped=0
+    filter entries: 2
+    reconstruction == original bytes : True
+    reconstructed txid == stored txid: True
+
+And it is checkable rather than assumed. txid excludes witness data, so a
+correct reconstruction hashes to the stored txid — which the merkle root
+protects, which proof-of-work protects.
+
+That is verified reconstruction, not fabrication. The distinction is the whole
+argument, and the earlier draft missed it.
+
+## Options
 
 | Option | Verdict |
 |---|---|
 | Don't prune the node | Defeats the purpose entirely |
-| RPC proxy that answers for missing blocks | **Rejected.** Stripped blocks cannot be reconstructed, so the proxy would have to serve blocks that do not hash correctly. Serving fabricated blocks to an indexer is not acceptable regardless of how convenient it is |
-| Proxy that reports `pruned: false` | Rejected. Same dishonesty, smaller |
-| Minimal electrs patch: opt-in flag to allow a pruned daemon | **Recommended** |
-| electrs indexes from the monetary store directly | The right long-term answer, much larger change; needed anyway for bootstrap |
+| Proxy reporting `pruned: false` while serving nothing | Rejected — dishonest, and serves no data |
+| **RPC proxy serving verified reconstructions** | **Recommended** |
+| electrs patch: opt-in flag to allow a pruned daemon | Fallback, or a bridge while the proxy is built |
+| electrs indexes the monetary store natively | Larger change, unnecessary if the proxy works |
 
 ## Recommended path
 
-A single flag, `--allow-pruned-daemon`, default off, that turns the hard
-refusal into a warning.
+A block server presenting a bitcoind-compatible RPC interface, answering from
+the monetary store, serving reconstructions verified against stored txids
+before returning them.
 
-It is small, it is honest about what it does, it has value to people who have
-nothing to do with monetary nodes (running electrs on a pruned node after
-indexing is a thing people have wanted), and it is plausibly upstreamable on
-its own merits — which would collapse the trust ask back to one non-standard
-component.
+**The invariant that makes this legitimate:** every reconstructed transaction
+must hash to its stored txid before being served. Any block containing a
+transaction that fails must **error rather than serve partially**. Without
+that assertion this becomes the thing the earlier draft rightly rejected.
 
-If upstream declines, it remains a patch small enough to read in one sitting,
-which is a materially different proposition from a fork.
+**Why it beats patching electrs:** it requires no patch to anything. electrs,
+Fulcrum and ElectrumX all speak the same RPC, so one tool serves all three
+unmodified, and the trust ask collapses to this repository alone. That also
+answers the objection that a novel node plus a patched indexer is a much
+harder sell than either alone.
+
+**What it cannot do.** Witness data is gone permanently, so reconstructed
+blocks carry correct txids and no witnesses, and the witness commitment will
+not match. Address indexers do not check it; anything that does will break.
+The claim is therefore *sufficient for indexing* — never "identical to a
+legacy node".
+
+**Format v2 is a prerequisite, not an extra.** Stripped transactions keep
+their outputs (tested — they do receive filter entries) but lose their inputs,
+so they cannot be reconstructed at all under v1. See `FORMAT_V2.md`.
 
 ## Phases
 
 ### Phase 1 — establish the facts (blocking)
 
-Nothing is built until these are answered, and they are answered by reading
-source and running experiments, not by assuming.
+Answered by reading source and running experiments, not by assuming. The
+earlier draft's central error came from assuming.
 
-1. Does electrs re-read indexed blocks? Under what conditions?
-2. How does it fetch full block data — the code path was not located; only
-   `getblock` with verbosity 1 (txids only) was found
-3. How does it serve `blockchain.transaction.get` — own database, or daemon?
+1. Does electrs re-read blocks it has already indexed? Under what conditions —
+   compaction, deep reorg, restart with a partially-written database?
+2. How does it fetch full block data? Only `getblock` with verbosity 1 (txids
+   only) was located; the full-block path was not found.
+3. Does it serve `blockchain.transaction.get` from its own database, or
+   re-fetch from the daemon? A monetary node cannot serve raw hex for the
+   19.34% of transactions that are modified or stripped.
 4. What does it expose as its indexed height?
 
-**Deliverable:** a short findings document. If question 1 answers badly, the
-plan changes shape entirely and that is worth knowing before any code.
+**Deliverable:** a findings document. Question 3 is the one most likely to
+force a redesign.
 
 ### Phase 2 — regtest harness
 
-Independent of electrs, needed for everything, and does not require the new
+Independent of everything else, needed regardless, and requires no new
 hardware.
 
-- Mine blocks on demand, construct each carrier type deliberately
-- Strip, then attempt to spend a dropped output and assert the node accepts it
+- Mine on demand, construct each carrier type deliberately
+- Strip, then spend a dropped output and assert the node accepts it
 - Runs in CI
 
 **Deliverable:** a test file that fails when the spend path breaks.
 
-### Phase 3 — the electrs patch
+### Phase 3 — format v2
 
-- `--allow-pruned-daemon`, default off
-- A test against a pruned regtest node
-- Opened as an *issue* upstream first, describing the use case, before any PR
+Prevout retention for stripped transactions. Small, specified, and blocking
+for phase 4. See `FORMAT_V2.md`.
 
-**Deliverable:** a patch, and an upstream conversation.
+**Measure the flag 1 / flag 2 split first.** Modified-plus-stripped is 19.34%
+of transactions across the era; the split has never been counted, and the cost
+of v2 depends entirely on it.
 
-### Phase 4 — prune_behind respects the indexer
+### Phase 4 — the reconstruction proxy
 
-`prune_behind.py` currently tracks only the daemon's recorded height. It needs
-a second input:
+- bitcoind-compatible RPC surface, enough for an indexer
+- Reconstruct from stored body plus filter entries
+- **Verify every reconstruction against its stored txid before serving**
+- Error, loudly, on any block that cannot be fully reconstructed
+
+**Deliverable:** unmodified electrs indexing from a monetary node.
+
+### Phase 5 — prune_behind respects the indexer
+
+`prune_behind.py` currently tracks only the daemon's recorded height:
 
 ```
-prune_floor = min(daemon_height, electrs_height) − margin
+prune_floor = min(daemon_height, indexer_height) − margin
 ```
 
-electrs's height comes from `blockchain.headers.subscribe` over the Electrum
-protocol — `wallet_check.py` already speaks it, so the client code exists.
+The indexer's height comes from `blockchain.headers.subscribe`, which
+`wallet_check.py` already speaks.
 
-**The fail-safe matters more than the check.** If electrs is stopped, crashed
-or unreachable, pruning must refuse entirely rather than fall back to the
-daemon height. A stalled prune fills a disk, which is visible and fixable.
-Deleting blocks the indexer never saw produces missing wallet history
-discovered weeks later.
+**The fail-safe matters more than the check.** If the indexer is stopped or
+unreachable, pruning must refuse entirely rather than fall back to the daemon
+height. A stalled prune fills a disk — visible and fixable. Deleting blocks
+the indexer never saw produces missing wallet history discovered weeks later.
 
-**Deliverable:** the height source, the refusal path, and tests for both.
+### Phase 6 — end to end on regtest
 
-### Phase 5 — end to end on regtest
+Electrum wallet → electrs → proxy → monetary node. Receive, confirm, spend,
+including a spend of an output whose transaction was stripped.
 
-Electrum wallet → electrs → monetary node. Receive, confirm, spend, including
-a spend of an output whose transaction was stripped.
-
-**Deliverable:** the first evidence that any of this works for a wallet user.
-
-### Phase 6 — index rebuild from a store (bootstrap)
-
-The piece that makes monetary nodes able to seed each other with wallet
-support intact. Depends on format v2 — see `FORMAT_V2.md`, where stripped
-transactions must retain their prevout list or the rebuilt index is silently
-wrong.
-
-Largest phase, least specified, and the one that matters most for the
-project's actual claim. Should not be attempted before phase 5 proves the
-simpler path works.
+**Deliverable:** the first evidence any of this works for a wallet user.
 
 ## Risks
 
-**The phase 1 assumption is wrong.** Mitigated only by doing phase 1 first.
+**Phase 1 assumptions are wrong.** Mitigated only by doing phase 1 first. The
+earlier draft of this document is the cautionary example.
 
-**Upstream declines the patch.** Likely, on the evidence: of the last 2,000
-electrs-adjacent commits in comparable projects the core team writes the large
-majority, and Electrum's own history shows features arriving as maintainer
-implementations of issues rather than merged outside PRs. Plan for the patch
-to live in this repo and be readable, not for it to be merged.
+**`blockchain.transaction.get` turns out to be load-bearing.** If wallets
+routinely fetch raw transactions the proxy cannot serve, the user-visible
+failure rate is higher than the 19.34% figure suggests. Phase 1, question 3.
 
-**Scope.** Six phases across Rust and Python, with an unwritten index rebuilder
-at the end. This is months for one person. The alpha does not depend on any of
-it and should ship first.
+**Scope.** Six phases, with an untested proxy at the centre. Months for one
+person. The alpha depends on none of it.
 
 ## What this does not change
 
-The v0.1.0 alpha stands on its own: node, tools, docs, measured results. It
-runs against an unmodified node and does not require electrs at all. Shipping
-it is not blocked by anything in this document.
+The v0.1.0 alpha stands alone: node, tools, docs, measured results. It runs
+against an unmodified node, requires no indexer, and is not blocked by
+anything in this document.
