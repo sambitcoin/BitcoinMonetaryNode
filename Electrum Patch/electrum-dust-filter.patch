@@ -1,0 +1,72 @@
+diff --git a/electrum/gui/qt/utxo_list.py b/electrum/gui/qt/utxo_list.py
+index fcd84db..cb3f648 100644
+--- a/electrum/gui/qt/utxo_list.py
++++ b/electrum/gui/qt/utxo_list.py
+@@ -96,6 +96,7 @@ class UTXOList(MyTreeView):
+             self.main_window.utxo_list.refresh_all()  # for coin frozen status
+             self.main_window.update_status()  # frozen balance
+         menu.addConfig(config.cv.WALLET_FREEZE_REUSED_ADDRESS_UTXOS, callback=cb)
++        menu.addConfig(config.cv.WALLET_FREEZE_DUST_UTXOS, callback=cb)
+         return toolbar
+ 
+     @profiler(min_threshold=0.05)
+diff --git a/electrum/simple_config.py b/electrum/simple_config.py
+index 2b5592e..b654b44 100644
+--- a/electrum/simple_config.py
++++ b/electrum/simple_config.py
+@@ -719,6 +719,15 @@ class SimpleConfig(Logger):
+ This can eliminate a serious privacy issue where a malicious user can track your spends by sending small payments
+ to a previously-paid address of yours that would then be included with unrelated inputs in your future payments."""),
+     )
++    WALLET_FREEZE_DUST_UTXOS = ConfigVar(
++        'wallet_freeze_dust_utxos', default=False, type_=bool,
++        short_desc=lambda: _('Avoid spending very small coins'),
++        long_desc=lambda: _("""Automatically freeze coins worth less than the dust threshold.
++At typical fee rates such a coin costs more to spend than it is worth, so including it in a payment loses money.
++The coins are not removed: they stay in your wallet, are counted in your frozen balance, and any individual coin can still be unfrozen by hand, which overrides this setting. Turn this off or lower the threshold when fees are low."""),
++    )
++    WALLET_FREEZE_DUST_UTXO_THRESHOLD_SAT = ConfigVar(
++        'wallet_freeze_dust_utxo_threshold', default=1000, type_=int)
+     WALLET_PARTIAL_WRITES = ConfigVar(
+         'wallet_partial_writes', default=False, type_=bool,
+         long_desc=lambda: _("""Allows partial updates to be written to disk for the wallet DB.
+diff --git a/electrum/wallet.py b/electrum/wallet.py
+index 6f0b985..cd5ab69 100644
+--- a/electrum/wallet.py
++++ b/electrum/wallet.py
+@@ -2218,6 +2218,8 @@ class Abstract_Wallet(ABC, Logger, EventListener):
+         assert addr is not None
+         if self.config.WALLET_FREEZE_REUSED_ADDRESS_UTXOS and self.adb.is_used_as_from_address(addr):
+             return True
++        if self._is_coin_uneconomic_dust(utxo):
++            return True
+         return False
+ 
+     def _is_coin_small_and_unconfirmed(self, utxo: PartialTxInput) -> bool:
+@@ -2253,6 +2255,26 @@ class Abstract_Wallet(ABC, Logger, EventListener):
+             return False
+         return True
+ 
++    def _is_coin_uneconomic_dust(self, utxo: PartialTxInput) -> bool:
++        """If true, the coin is too small to be worth spending at typical fee
++        rates, so it is implicitly frozen and stays out of coin selection.
++
++        This is a spending preference, not a claim that the coin is worthless.
++        The coin stays in the wallet, it is counted in the frozen balance, and
++        an explicit per-coin unfreeze takes precedence over this rule (see
++        is_frozen_coin, which checks user-set state first and returns early).
++        A coin that is uneconomic at 50 sat/vB is spendable at 2 sat/vB, so
++        the threshold is a setting rather than a constant.
++        """
++        if not self.config.WALLET_FREEZE_DUST_UTXOS:
++            return False
++        threshold = self.config.WALLET_FREEZE_DUST_UTXO_THRESHOLD_SAT
++        if threshold <= 0:
++            return False
++        value_sats = utxo.value_sats()
++        assert value_sats is not None
++        return value_sats < threshold
++
+     def set_frozen_state_of_addresses(
+         self,
+         addrs: Iterable[str],
