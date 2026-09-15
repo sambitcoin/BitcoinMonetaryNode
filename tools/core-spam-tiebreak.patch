@@ -1,8 +1,8 @@
 diff --git a/src/chain.h b/src/chain.h
-index 1ca2184..afb1098 100644
+index 1ca2184..42dc161 100644
 --- a/src/chain.h
 +++ b/src/chain.h
-@@ -148,6 +148,18 @@ public:
+@@ -148,6 +148,20 @@ public:
      //! belonging to the best chain which overwrite it to SEQ_ID_BEST_CHAIN_FROM_DISK{0}.
      int32_t nSequenceId{SEQ_ID_INIT_FROM_DISK};
  
@@ -17,6 +17,8 @@ index 1ca2184..afb1098 100644
 +    //! comparator, and mutating the ordering of a contained element is
 +    //! undefined behaviour.
 +    uint32_t m_spam_score{0};
++
++    int64_t m_time_received{0};
 +
      //! (memory only) Maximum nTime in the chain up to and including this block.
      unsigned int nTimeMax{0};
@@ -34,10 +36,10 @@ index da3d41c..0d415be 100644
      argsman.AddArg("-persistmempoolv1",
                     strprintf("Whether a mempool.dat file created by -persistmempool or the savemempool RPC will be written in the legacy format "
 diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
-index 8771c35..214351e 100644
+index 8771c35..6bd7a9c 100644
 --- a/src/node/blockstorage.cpp
 +++ b/src/node/blockstorage.cpp
-@@ -171,12 +171,43 @@ std::string CBlockFileInfo::ToString() const
+@@ -171,12 +171,47 @@ std::string CBlockFileInfo::ToString() const
  
  namespace node {
  
@@ -73,6 +75,10 @@ index 8771c35..214351e 100644
 +    // the block carrying less spam. This is policy, not consensus. Both
 +    // blocks remain valid and neither is rejected; the moment either chain is
 +    // extended the work comparison above decides and this never runs.
++    // Blocks that arrived after the race window closed carry SPAM_SCORE_LATE
++    // and therefore sort worst, so a straggler can never displace an
++    // incumbent. The window is folded into the score rather than gated by a
++    // flag, to keep this a strict weak ordering -- see SPAM_SCORE_LATE.
 +    if (g_spam_tiebreak.load(std::memory_order_relaxed) &&
 +        pa->m_spam_score != pb->m_spam_score) {
 +        return pa->m_spam_score > pb->m_spam_score;
@@ -82,10 +88,10 @@ index 8771c35..214351e 100644
      if (pa->nSequenceId < pb->nSequenceId) return false;
      if (pa->nSequenceId > pb->nSequenceId) return true;
 diff --git a/src/node/blockstorage.h b/src/node/blockstorage.h
-index 8869ee2..b4d5f17 100644
+index 8869ee2..7b9b1b1 100644
 --- a/src/node/blockstorage.h
 +++ b/src/node/blockstorage.h
-@@ -135,6 +135,22 @@ inline constexpr uint32_t UNDO_DATA_DISK_OVERHEAD{STORAGE_HEADER_BYTES + uint256
+@@ -135,6 +135,46 @@ inline constexpr uint32_t UNDO_DATA_DISK_OVERHEAD{STORAGE_HEADER_BYTES + uint256
  // containers), or make the key a `std::unique_ptr<CBlockIndex>`
  using BlockMap = std::unordered_map<uint256, CBlockIndex, BlockHasher>;
  
@@ -98,6 +104,30 @@ index 8869ee2..b4d5f17 100644
 + *  cleaner and is the obvious review comment. */
 +extern std::atomic<bool> g_spam_tiebreak;
 +
++/** How long after the incumbent block arrived a challenger may still win the
++ *  content tiebreak, in seconds.
++ *
++ *  Past this, the race is over: the network has converged, and switching
++ *  would mean reorging away a block we already accepted onto the side that
++ *  already lost. Compact-block propagation reaches most of the network in a
++ *  few seconds, so this is generous by design rather than tuned. */
++static constexpr int64_t SPAM_TIEBREAK_WINDOW_SECONDS{30};
++
++/** Score assigned to a block that arrived after the race window closed.
++ *
++ *  Worst-possible rather than a separate "ineligible" flag, and that is not a
++ *  stylistic choice. A flag makes the comparison depend on BOTH operands'
++ *  flags, which destroys transitivity: with A(7, eligible), B(0, eligible,
++ *  later) and C(5, ineligible, middle) you get B beats A on score, C beats B
++ *  on arrival, A beats C on arrival -- a cycle. std::set with an intransitive
++ *  comparator is undefined behaviour and corrupts silently.
++ *
++ *  Folding the window into the score keeps the ordering a plain lexicographic
++ *  composition of total orders, so it is a strict weak ordering by
++ *  construction. A late block simply sorts worst and can never displace an
++ *  incumbent, which is exactly the intended semantics. */
++static constexpr uint32_t SPAM_SCORE_LATE{std::numeric_limits<uint32_t>::max()};
++
 +/** Data-carrier bytes in a block, bucketed coarsely.
 + *
 + *  Coarse on purpose. Ranking by exact byte counts would make chain selection
@@ -109,17 +139,29 @@ index 8869ee2..b4d5f17 100644
      bool operator()(const CBlockIndex* pa, const CBlockIndex* pb) const;
      using is_transparent = void;
 diff --git a/src/validation.cpp b/src/validation.cpp
-index c85a3af..2b494b4 100644
+index c85a3af..26559ee 100644
 --- a/src/validation.cpp
 +++ b/src/validation.cpp
-@@ -3790,6 +3790,10 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
+@@ -3790,6 +3790,22 @@ void ChainstateManager::ReceivedBlockTransactions(const CBlock& block, CBlockInd
      pindexNew->nDataPos = pos.nPos;
      pindexNew->nUndoPos = 0;
      pindexNew->nStatus |= BLOCK_HAVE_DATA;
 +    // Assign the tiebreak score here, while the full block is in hand and
 +    // before this index can be inserted into setBlockIndexCandidates below.
 +    // It must never be recomputed: see the note on CBlockIndex::m_spam_score.
-+    pindexNew->m_spam_score = node::SpamScore(block);
++    pindexNew->m_time_received = GetTime();
++    {
++        // A block that arrives after the race window of whichever block
++        // already holds this height is a straggler, not a contender: scoring
++        // it worst keeps us from reorging away a block we already accepted,
++        // onto the side that has by then already lost.
++        const CBlockIndex* incumbent{m_chain[pindexNew->nHeight]};
++        const int64_t delta{incumbent ? pindexNew->m_time_received - incumbent->m_time_received : 0};
++        const bool in_window{incumbent == nullptr || incumbent == pindexNew ||
++                             (delta >= 0 && delta <= node::SPAM_TIEBREAK_WINDOW_SECONDS)};
++        pindexNew->m_spam_score = in_window ? node::SpamScore(block)
++                                            : node::SPAM_SCORE_LATE;
++    }
      if (DeploymentActiveAt(*pindexNew, *this, Consensus::DEPLOYMENT_SEGWIT)) {
          pindexNew->nStatus |= BLOCK_OPT_WITNESS;
      }

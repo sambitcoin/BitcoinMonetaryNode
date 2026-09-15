@@ -15,6 +15,7 @@ struct Idx {
     std::string name;
 };
 
+static constexpr uint32_t LATE = 0xFFFFFFFFu;
 static bool g_spam_tiebreak = false;
 
 struct Cmp {
@@ -65,11 +66,30 @@ int main() {
     Idx D{100, 3, 0, "D_clean_third"};
     ck("equal spam -> first-seen (B before D)", best({&B,&D})->name == "B_clean_second");
 
+    // ---- the race window, enforced via eligibility
+    // Late straggler: clean, but arrived outside the window -> not eligible.
+    Idx L{100, 4, LATE, "L_clean_late"};
+    Idx S{100, 1, 5000, "S_spammy_incumbent"};
+    g_spam_tiebreak = true;
+    ck("late clean block does NOT displace incumbent",
+       best({&S,&L})->name == "S_spammy_incumbent");
+
+    // Same pair, but arriving inside the window -> eligible, and it wins.
+    Idx L2{100, 4, 0, "L2_clean_in_window"};
+    ck("clean block inside window DOES win",
+       best({&S,&L2})->name == "L2_clean_in_window");
+
+    // A late SPAMMY block must not displace a clean incumbent either.
+    Idx CleanInc{100, 1, 0, "clean_incumbent"};
+    Idx SpamLate{100, 4, LATE, "spammy_late"};
+    ck("late spammy block does not displace clean incumbent",
+       best({&CleanInc,&SpamLate})->name == "clean_incumbent");
+
     // ---- strict weak ordering, exhaustively over a small population
     std::vector<Idx> pop;
     for (uint64_t w : {100ull, 101ull})
         for (int32_t s : {1, 2})
-            for (uint32_t sp : {0u, 7u})
+            for (uint32_t sp : {0u, 7u, LATE})
                 pop.push_back(Idx{w, s, sp, ""});
     std::vector<Idx*> p; for (auto& i : pop) p.push_back(&i);
 
