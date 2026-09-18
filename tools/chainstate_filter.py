@@ -54,6 +54,17 @@ DUST_THRESHOLD = 1000
 # prefix, block-level indexing and per-record framing. Conservative.
 LEVELDB_OVERHEAD_FACTOR = 1.35
 
+# Age analysis. Blocks, not dates: the chainstate records a creation height per
+# coin and nothing else, so every age here is derived from block distance.
+BLOCKS_PER_YEAR = 52560          # 6 blocks/hour * 24 * 365
+AGE_BANDS = (                    # (label, lower bound in blocks, inclusive)
+    ("2+ years",     2 * BLOCKS_PER_YEAR),
+    ("1-2 years",    1 * BLOCKS_PER_YEAR),
+    ("6-12 months",  BLOCKS_PER_YEAR // 2),
+    ("under 6 mo",   0),
+)
+HIST_SIZE = 1_200_000            # headroom over the current tip height
+
 OP_RETURN = 0x6A
 OP_CHECKMULTISIG = 0xAE
 SECP_P = 2**256 - 2**32 - 977
@@ -265,6 +276,14 @@ def scan(path, write_dir=None, progress=5_000_000):
     for k in ("monetary", "dust", "multisig_data", "op_return"):
         cats[k] = {"n": 0, "coin": 0, "archive": 0, "value": 0}
 
+    # Per-height histograms. Bucketing by AGE during the scan would need the
+    # tip height, which is not known until the scan ends -- so accumulate by
+    # absolute height and convert afterwards. A flat list indexed by height
+    # costs a few MB and avoids holding 166M per-coin heights in memory.
+    hist = {k: {"n": [0] * HIST_SIZE, "coin": [0] * HIST_SIZE}
+            for k in ("monetary", "dust")}
+    max_height = 0
+
     hot_out = cold_out = None
     if write_dir:
         os.makedirs(write_dir, exist_ok=True)
@@ -291,6 +310,13 @@ def scan(path, write_dir=None, progress=5_000_000):
                 c["archive"] += archive_bytes(script)
                 c["value"] += amount
 
+                if kind in hist and 0 <= height < HIST_SIZE:
+                    h = hist[kind]
+                    h["n"][height] += 1
+                    h["coin"][height] += coin_bytes(script)
+                    if height > max_height:
+                        max_height = height
+
                 if write_dir:
                     rec = (txid + struct.pack("<I", vout)
                            + struct.pack("<Q", amount)
@@ -310,7 +336,7 @@ def scan(path, write_dir=None, progress=5_000_000):
         if cold_out:
             cold_out.close()
 
-    return blockhash, count, cats, seen
+    return blockhash, count, cats, seen, hist, max_height
 
 
 def human(n):
@@ -412,6 +438,82 @@ def report(count, cats, seen):
         print(f"WARNING: header declared {count:,} outputs, parsed {seen:,}")
 
 
+def age_bands(hist_kind, tip):
+    """Fold a per-height histogram into age bands. Returns [(label, n, bytes)]."""
+    out = []
+    for label, lo_blocks in AGE_BANDS:
+        n = b = 0
+        for height in range(0, min(tip - lo_blocks + 1, HIST_SIZE)):
+            n += hist_kind["n"][height]
+            b += hist_kind["coin"][height]
+        out.append([label, n, b])
+    # Each entry above is CUMULATIVE: "at least this old". Ordered oldest
+    # first, so each is a superset of the one before it. Difference downward
+    # -- entry i minus entry i-1 -- to get exclusive bands. Differencing the
+    # other way produces negative counts, which is easy to miss in a summary
+    # table and is what the self-test checks for.
+    for i in range(len(out) - 1, 0, -1):
+        out[i][1] -= out[i - 1][1]
+        out[i][2] -= out[i - 1][2]
+    return out
+
+
+def age_report(hist, tip):
+    """Age distribution of dust, with monetary outputs as the control.
+
+    The control is the point. If 40% of dust is over a year old but 40% of
+    everything is too, age says nothing about dust in particular. Only the
+    difference between the two columns is evidence.
+    """
+    print()
+    print("=" * 68)
+    print("AGE DISTRIBUTION")
+    print("=" * 68)
+    print(f"tip height {tip:,}   (1 year = {BLOCKS_PER_YEAR:,} blocks)")
+    print()
+
+    bands = {k: age_bands(hist[k], tip) for k in ("dust", "monetary")}
+    totals = {k: sum(r[1] for r in bands[k]) for k in bands}
+
+    print(f"{'age':<14}{'dust':>14}{'share':>9}"
+          f"{'monetary':>16}{'share':>9}")
+    for i, (label, _lo) in enumerate(AGE_BANDS):
+        d_n = bands["dust"][i][1]
+        m_n = bands["monetary"][i][1]
+        d_pc = 100.0 * d_n / totals["dust"] if totals["dust"] else 0.0
+        m_pc = 100.0 * m_n / totals["monetary"] if totals["monetary"] else 0.0
+        print(f"{label:<14}{d_n:>14,}{d_pc:>8.2f}%{m_n:>16,}{m_pc:>8.2f}%")
+
+    # the headline: everything at least a year old
+    def over_year(kind):
+        n = sum(r[1] for r in bands[kind][:2])   # 2+ years and 1-2 years
+        b = sum(r[2] for r in bands[kind][:2])
+        return n, b
+
+    d_n, d_b = over_year("dust")
+    m_n, m_b = over_year("monetary")
+    d_pc = 100.0 * d_n / totals["dust"] if totals["dust"] else 0.0
+    m_pc = 100.0 * m_n / totals["monetary"] if totals["monetary"] else 0.0
+
+    print()
+    print(f"dust over 1 year old      {d_n:>14,}   {d_pc:.2f}% of dust"
+          f"   {human(d_b)}")
+    print(f"monetary over 1 year old  {m_n:>14,}   {m_pc:.2f}% of monetary")
+    print()
+    if d_pc > m_pc:
+        print(f"Dust skews older than monetary output by {d_pc - m_pc:.2f}"
+              " percentage points.")
+    else:
+        print(f"Dust skews YOUNGER than monetary output by {m_pc - d_pc:.2f}"
+              " percentage points. Age is not evidence of abandonment here.")
+    print()
+    print("A coin's height is when it was created, not when it was last")
+    print("touched -- the chainstate records nothing else. Age here means")
+    print("'created long ago and still unspent', which is the question asked,")
+    print("but it is not the same as 'untouched'.")
+    print("=" * 68)
+
+
 # ---------------------------------------------------------------- self-test
 
 
@@ -435,6 +537,43 @@ def selftest():
     check("compact size 0xFD reads 2 bytes LE", s.compact_size() == 10000)
     s = Stream(io.BytesIO(bytes([0x8F, 0x00])))
     check("varint is base-128 with +1 carry", s.varint() == 2048)
+
+    print("\nage banding")
+    # tip 1,000,000. 1yr = 52,560 blocks -> the 1-year cutoff is height 947,440.
+    tip = 1_000_000
+    h = {"n": [0] * HIST_SIZE, "coin": [0] * HIST_SIZE}
+    def put(height, n=1, b=43):
+        h["n"][height] += n
+        h["coin"][height] += b
+
+    put(tip)                                  # brand new
+    put(tip - BLOCKS_PER_YEAR // 2 + 1)       # just under 6 months
+    put(tip - BLOCKS_PER_YEAR // 2)           # exactly 6 months -> 6-12 band
+    put(tip - BLOCKS_PER_YEAR + 1)            # just under 1 year
+    put(tip - BLOCKS_PER_YEAR)                # exactly 1 year -> 1-2 band
+    put(tip - 2 * BLOCKS_PER_YEAR + 1)        # just under 2 years
+    put(tip - 2 * BLOCKS_PER_YEAR)            # exactly 2 years -> 2+ band
+    put(0)                                    # genesis-era
+
+    bands = dict((lbl, n) for lbl, n, _b in age_bands(h, tip))
+    check("under 6 mo counts 2", bands["under 6 mo"] == 2,
+          f"got {bands['under 6 mo']}")
+    check("6-12 months counts 2", bands["6-12 months"] == 2,
+          f"got {bands['6-12 months']}")
+    check("1-2 years counts 2", bands["1-2 years"] == 2,
+          f"got {bands['1-2 years']}")
+    check("2+ years counts 2", bands["2+ years"] == 2,
+          f"got {bands['2+ years']}")
+    check("bands sum to every coin", sum(bands.values()) == 8,
+          f"got {sum(bands.values())}")
+
+    # a coin exactly on a boundary must land in the OLDER band, once only
+    h2 = {"n": [0] * HIST_SIZE, "coin": [0] * HIST_SIZE}
+    h2["n"][tip - BLOCKS_PER_YEAR] = 1
+    b2 = dict((lbl, n) for lbl, n, _b in age_bands(h2, tip))
+    check("exact 1-year boundary is '1-2 years', not '6-12'",
+          b2["1-2 years"] == 1 and b2["6-12 months"] == 0)
+    check("boundary coin counted exactly once", sum(b2.values()) == 1)
 
     print("\nclassification")
     p2tr = b"\x51\x20" + b"\x11" * 32
@@ -495,8 +634,9 @@ def main():
     if not args.snapshot:
         sys.exit("need a dumptxoutset snapshot (or --selftest)")
 
-    _bh, count, cats, seen = scan(args.snapshot, args.write)
+    _bh, count, cats, seen, hist, tip = scan(args.snapshot, args.write)
     report(count, cats, seen)
+    age_report(hist, tip)
 
     if args.write:
         print()
