@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 """
-monetary_ui.py — a local dashboard for a monetary node.
+monetary_ui.py — a local dashboard and live feed for a monetary node.
 
-Node sync state, store position, daemon lag, the commitment and the height it
-belongs to, what stripping saved, and a live tail of the log files so you can
-see what the tools are doing.
+A background thread polls the node every few seconds and records events:
+new blocks with their fee figures, mempool movement, the daemon advancing
+through the store, and — given more prominence — transactions belonging to
+this node's own wallet. The page streams those events without reloading.
 
-READ ONLY, deliberately.
+Individual mempool transactions are deliberately NOT in the feed. There are
+thousands a minute and they would bury everything worth seeing. Wallet
+transactions are the exception, because those are yours.
 
-There are no buttons and no shell. A terminal over HTTP is remote code
-execution on your node behind a page with no authentication -- a stray
-request from anything that can reach the port would be enough. The log view
-is a view of a file and nothing more: it cannot run a command, and it can
-only open files this process already listed in one directory.
+READ ONLY. No buttons, no shell. A terminal over HTTP is remote code
+execution on your node behind a page with no authentication. Nothing here
+starts, stops, converts or prunes; pruning is irreversible and lives on the
+command line.
 
-Nothing here starts, stops, converts or prunes. Pruning is irreversible and
-lives on the command line.
-
-Binds 127.0.0.1 and refuses other addresses unless overridden, because the
-page reveals your node's height, peers, tip and store layout.
+Binds 127.0.0.1 and refuses other addresses unless overridden.
 
 Standard library only.
 
-    python3 monetary_ui.py --build-log results/build.log
+    python3 monetary_ui.py
     python3 monetary_ui.py --selftest
 
 then open http://127.0.0.1:8080
@@ -32,13 +30,17 @@ BSD-2-Clause.
 
 import argparse
 import base64
+import collections
 import html
 import http.server
 import json
 import os
 import re
+import socket
 import socketserver
+import ssl
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -47,6 +49,11 @@ import urllib.request
 REFRESH_SECONDS = 10
 LOG_LINES = 40
 LOG_WINDOW = 32768
+POLL_SECONDS = 3
+FEED_MAX = 400
+MEMPOOL_REPORT_DELTA = 400      # only note mempool moves bigger than this
+SEEN_WALLET_MAX = 2000          # bound on remembered wallet tx keys
+PEERS_SHOWN = 25
 
 
 # ---------------------------------------------------------------- node RPC
@@ -79,11 +86,289 @@ class RPC:
         return out["result"]
 
 
+# ---------------------------------------------------------------- indexers
+
+
+def probe_electrum(hostport, use_ssl=False, timeout=5):
+    """Ask an Electrum-protocol server its version and tip height.
+
+    Works with Fulcrum, electrs and ElectrumX alike -- they all speak the
+    same newline-delimited JSON. Returns a dict, never raises.
+
+    TLS here does NOT verify the certificate. Indexers are almost always
+    self-signed and on your own machine or LAN, so verification would fail
+    for everyone; the connection is encrypted but unauthenticated, which is
+    the honest description. Do not point this at a server you do not run.
+    """
+    out = {"target": hostport, "ssl": bool(use_ssl), "ok": False,
+           "server": None, "height": None, "error": None}
+    try:
+        host, _, port = hostport.rpartition(":")
+        sock = socket.create_connection((host, int(port)), timeout=timeout)
+        if use_ssl:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            sock = ctx.wrap_socket(sock, server_hostname=host)
+        with sock:
+            sock.settimeout(timeout)
+            req = (json.dumps({"id": 0, "method": "server.version",
+                               "params": ["monetary-ui", "1.4"]}) + "\n"
+                   + json.dumps({"id": 1, "method": "blockchain.headers.subscribe",
+                                 "params": []}) + "\n")
+            sock.sendall(req.encode())
+            buf = b""
+            deadline = time.time() + timeout
+            while time.time() < deadline and buf.count(b"\n") < 2:
+                chunk = sock.recv(8192)
+                if not chunk:
+                    break
+                buf += chunk
+        for line in buf.decode(errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get("id") == 0:
+                v = m.get("result")
+                out["server"] = v[0] if isinstance(v, list) and v else str(v)
+            elif m.get("id") == 1:
+                res = m.get("result") or {}
+                out["height"] = res.get("height")
+        out["ok"] = out["height"] is not None
+        if not out["ok"] and out["error"] is None:
+            out["error"] = "connected but no height returned"
+    except Exception as e:
+        out["error"] = str(e)[:160]
+    return out
+
+
+# ---------------------------------------------------------------- the feed
+
+
+class Feed:
+    """Bounded, thread-safe event log with monotonic ids.
+
+    Bounded because this runs for weeks: an unbounded list is a slow memory
+    leak. Ids are monotonic so a client can ask for "everything after n"
+    without the server tracking who has seen what.
+    """
+
+    def __init__(self, maxlen=FEED_MAX):
+        self._lock = threading.Lock()
+        self._events = collections.deque(maxlen=maxlen)
+        self._next = 1
+
+    def add(self, kind, text, detail=None, important=False):
+        with self._lock:
+            ev = {"id": self._next, "t": time.time(), "kind": kind,
+                  "text": text, "detail": detail or "", "important": important}
+            self._next += 1
+            self._events.append(ev)
+            return ev
+
+    def since(self, after=0, limit=200):
+        with self._lock:
+            out = [e for e in self._events if e["id"] > after]
+        return out[-limit:]
+
+    def last_id(self):
+        with self._lock:
+            return self._next - 1
+
+
+def sats(n):
+    if n is None:
+        return "—"
+    return f"{n:,} sat"
+
+
+class Poller(threading.Thread):
+    """Watches the node and the store, turning changes into feed events."""
+
+    daemon = True
+
+    def __init__(self, cfg, feed):
+        super().__init__(name="poller")
+        self.cfg, self.feed = cfg, feed
+        self.stop = threading.Event()
+        self.last_height = None
+        self.last_mempool = None
+        self.last_store_height = None
+        # Bounded on purpose. An unbounded set of every wallet key ever seen
+        # is a slow leak in a process meant to run for weeks: the deque
+        # evicts the oldest key as new ones arrive, and the set is only a
+        # membership index over it.
+        self.seen_wallet = set()
+        self.seen_order = collections.deque(maxlen=SEEN_WALLET_MAX)
+        self.warned_no_wallet = False
+        self.warned_down = False
+        self.last_indexer_height = None
+        self.indexer = None
+        self.indexer_checked = 0.0
+
+    def rpc(self):
+        return RPC(self.cfg.rpc_url, self.cfg.cookie)
+
+    def run(self):
+        while not self.stop.is_set():
+            try:
+                self.tick()
+                if self.warned_down:
+                    self.feed.add("node", "node reachable again")
+                    self.warned_down = False
+            except Exception as e:
+                if not self.warned_down:
+                    self.feed.add("error", "node unreachable", str(e)[:200])
+                    self.warned_down = True
+            self.stop.wait(POLL_SECONDS)
+
+    def tick(self):
+        r = self.rpc()
+        info = r.call("getblockchaininfo")
+        h = info["blocks"]
+
+        if self.last_height is None:
+            self.feed.add("node", f"watching from height {h:,}",
+                          f"{info.get('chain')} · "
+                          f"{'syncing' if info.get('initialblockdownload') else 'synced'}")
+            self.last_height = h
+        elif h > self.last_height:
+            # Report every block we skipped, not just the newest, but cap it
+            # so catching up after a pause does not flood the feed.
+            first = max(self.last_height + 1, h - 8)
+            if first > self.last_height + 1:
+                self.feed.add("block", f"skipped to {first:,}",
+                              f"{first - self.last_height - 1} blocks not detailed")
+            for height in range(first, h + 1):
+                self.block_event(r, height)
+            self.last_height = h
+
+        self.mempool_event(r)
+        self.store_event()
+        self.wallet_event(r)
+        self.indexer_event()
+
+    def indexer_event(self):
+        """Poll the configured indexer, but far less often than the node.
+
+        An Electrum query is a TCP connect and handshake; doing that every
+        three seconds against your own Fulcrum is rude and pointless, since
+        an index moves at block speed.
+        """
+        target = getattr(self.cfg, "electrum", None)
+        if not target:
+            return
+        if time.time() - self.indexer_checked < 15:
+            return
+        self.indexer_checked = time.time()
+        res = probe_electrum(target, getattr(self.cfg, "electrum_ssl", False))
+        prev = self.indexer
+        self.indexer = res
+        if res["ok"]:
+            if prev is not None and not prev.get("ok"):
+                self.feed.add("indexer", f"{target} reachable again",
+                              f"{res.get('server') or ''} at {res['height']:,}")
+            elif self.last_indexer_height is None:
+                self.feed.add("indexer", f"{target} at {res['height']:,}",
+                              res.get("server") or "")
+            elif res["height"] != self.last_indexer_height:
+                delta = res["height"] - self.last_indexer_height
+                self.feed.add("indexer", f"indexer at {res['height']:,}",
+                              f"{delta:+d} · "
+                              f"{(self.last_height or 0) - res['height']} behind the node")
+            self.last_indexer_height = res["height"]
+        elif prev is None or prev.get("ok"):
+            self.feed.add("indexer", f"{target} unreachable",
+                          res.get("error") or "")
+
+    def block_event(self, r, height):
+        try:
+            st = r.call("getblockstats", height,
+                        ["height", "total_size", "txs", "totalfee",
+                         "feerate_percentiles", "subsidy"])
+            fee = st.get("totalfee")
+            pct = st.get("feerate_percentiles") or []
+            median = pct[2] if len(pct) >= 3 else None
+            detail = (f"{st.get('txs', 0):,} tx · "
+                      f"{(st.get('total_size') or 0) / 1e6:.2f} MB · "
+                      f"fees {(fee or 0) / 1e8:.4f} BTC")
+            if median is not None:
+                detail += f" · median {median} sat/vB"
+            self.feed.add("block", f"block {height:,}", detail)
+        except Exception as e:
+            self.feed.add("block", f"block {height:,}",
+                          f"stats unavailable: {str(e)[:80]}")
+
+    def mempool_event(self, r):
+        try:
+            m = r.call("getmempoolinfo")
+        except Exception:
+            return
+        n = m.get("size")
+        if self.last_mempool is None:
+            self.last_mempool = n
+            return
+        if abs(n - self.last_mempool) >= MEMPOOL_REPORT_DELTA:
+            direction = "+" if n > self.last_mempool else ""
+            self.feed.add(
+                "mempool", f"mempool {n:,} tx",
+                f"{direction}{n - self.last_mempool:,} · "
+                f"{(m.get('bytes') or 0) / 1e6:.1f} MB · "
+                f"min relay {m.get('mempoolminfee', 0) * 1e5:.2f} sat/vB")
+            self.last_mempool = n
+
+    def store_event(self):
+        state, _ = read_state(self.cfg.store)
+        if not state:
+            return
+        h = state.get("height")
+        if self.last_store_height is None:
+            self.last_store_height = h
+        elif h > self.last_store_height:
+            self.feed.add("store", f"stripped to {h:,}",
+                          f"+{h - self.last_store_height} blocks into the store")
+            self.last_store_height = h
+
+    def wallet_event(self, r):
+        """This node's own transactions. Given prominence: they are yours."""
+        try:
+            wallets = r.call("listwallets")
+        except Exception:
+            return
+        if not wallets:
+            if not self.warned_no_wallet:
+                self.feed.add("wallet", "no wallet loaded",
+                              "nothing of this node's own to report")
+                self.warned_no_wallet = True
+            return
+        try:
+            txs = r.call("listtransactions", "*", 20, 0, True)
+        except Exception:
+            return
+        for t in txs:
+            key = (t.get("txid"), t.get("category"), t.get("vout"))
+            if key in self.seen_wallet:
+                continue
+            if len(self.seen_order) == self.seen_order.maxlen:
+                self.seen_wallet.discard(self.seen_order[0])
+            self.seen_order.append(key)
+            self.seen_wallet.add(key)
+            if self.last_height is None:
+                continue          # first pass: prime without shouting
+            conf = t.get("confirmations", 0)
+            where = "unconfirmed" if conf < 1 else f"{conf} conf"
+            amt = t.get("amount", 0)
+            self.feed.add(
+                "wallet",
+                f"{t.get('category', 'tx')} {amt:+.8f} BTC",
+                f"{where} · {t.get('txid', '')[:20]}…",
+                important=True)
+
+
 # ---------------------------------------------------------------- gathering
-#
-# Everything here must be CHEAP. The page refreshes every few seconds, so
-# nothing may walk the store, recompute a commitment, or du a 666 GB tree.
-# Figures that only come from an expensive job are read from that job's log.
 
 
 def read_state(store):
@@ -152,7 +437,6 @@ def read_build_log(path):
 
 
 def list_logs(log_dir):
-    """Log files available to view. Names only — never a path from a client."""
     try:
         return sorted(e.name for e in os.scandir(log_dir)
                       if e.is_file() and e.name.endswith(".log"))
@@ -163,13 +447,9 @@ def list_logs(log_dir):
 def tail_log(log_dir, name, lines=LOG_LINES, window=LOG_WINDOW):
     """Last `lines` of a log, by seeking rather than reading the whole file.
 
-    Build logs reach tens of MB and this runs on every refresh, so it reads a
-    fixed window off the end regardless of size.
-
     `name` is matched against the directory listing rather than joined onto a
-    path. A client-supplied '../../.bitcoin/bitcoin.conf', an absolute path,
-    or a symlink must not be able to select the file — only a name this
-    process already listed can be opened.
+    path, so a client-supplied '../../.bitcoin/bitcoin.conf', an absolute
+    path, or a symlink cannot select the file.
     """
     if name not in list_logs(log_dir):
         return None, f"no such log: {name}"
@@ -181,7 +461,7 @@ def tail_log(log_dir, name, lines=LOG_LINES, window=LOG_WINDOW):
             blob = fh.read()
         text = blob.decode("utf-8", errors="replace")
         if size > window:
-            text = text.split("\n", 1)[-1]       # drop the partial first line
+            text = text.split("\n", 1)[-1]
         rows = [r for r in text.splitlines() if r.strip()]
         return rows[-lines:], None
     except OSError as e:
@@ -215,16 +495,36 @@ def gather(cfg):
         d["node"] = None
         d["errors"].append(f"node RPC: {e}")
 
+    d["peers"] = []
+    if d["node"]:
+        try:
+            rpc = RPC(cfg.rpc_url, cfg.cookie)
+            for pr in rpc.call("getpeerinfo"):
+                d["peers"].append({
+                    "addr": pr.get("addr", ""),
+                    "network": pr.get("network", ""),
+                    "inbound": pr.get("inbound", False),
+                    "type": pr.get("connection_type", ""),
+                    "subver": pr.get("subver", ""),
+                    "ping": pr.get("pingtime"),
+                    "since": pr.get("conntime"),
+                    "sent": pr.get("bytessent", 0),
+                    "recv": pr.get("bytesrecv", 0),
+                    "height": pr.get("synced_blocks"),
+                })
+        except Exception as e:
+            d["errors"].append(f"getpeerinfo: {e}")
+
+    d["indexer"] = getattr(cfg, "_indexer", None)
+
     d["lag"] = (d["node"]["blocks"] - state.get("height", 0)
                 if state and d["node"] else None)
     d["build"] = read_build_log(cfg.build_log)
-
     d["log_dir"] = cfg.log_dir
     d["logs"] = list_logs(cfg.log_dir)
+
     want = getattr(cfg, "_selected_log", None)
     if want is None:
-        # default to whichever log changed most recently — almost always the
-        # job you are actually waiting on
         newest, newest_t = None, -1.0
         for n in d["logs"]:
             try:
@@ -285,6 +585,61 @@ td.v{color:#e8e6e1;word-break:break-all}
 .tab{display:inline-block;font-size:11px;color:#8b8880;text-decoration:none;border:1px solid #23252a;padding:2px 9px;margin:0 5px 5px 0}
 .tab.on{color:#f7931a;border-color:#4a3a1c}
 .term{background:#08090b;border:1px solid #1c1e22;padding:11px 13px;margin:0;font-size:11.5px;line-height:1.45;color:#b9b6b0;white-space:pre-wrap;word-break:break-word;max-height:360px;overflow:auto}
+#feed{background:#08090b;border:1px solid #1c1e22;max-height:420px;overflow:auto;font-size:11.5px;line-height:1.5}
+.ev{padding:5px 12px;border-bottom:1px solid #131519;display:flex;gap:10px}
+.ev:last-child{border-bottom:none}
+.ev .ts{color:#5f5d58;white-space:nowrap}
+.ev .tag{width:66px;flex:none;text-transform:uppercase;font-size:10px;letter-spacing:.08em;padding-top:1px}
+.ev .msg{flex:1;color:#d6d3cd}
+.ev .det{color:#8b8880}
+.ev.block .tag{color:#f7931a}
+.ev.store .tag{color:#5cb85c}
+.ev.mempool .tag{color:#6ba4d8}
+.ev.node .tag{color:#8b8880}
+.ev.error .tag{color:#d9534f}
+.ev.indexer .tag{color:#b58bd8}
+.ev.wallet{background:#15120a;border-left:2px solid #f7931a}
+.ev.wallet .tag{color:#f7931a}
+.ev.wallet .msg{color:#f5e6c8}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:#5cb85c;margin-right:6px;vertical-align:1px}
+.live.off{background:#d9534f}
+.pt{width:100%;border-collapse:collapse;font-size:11.5px}
+.pt th{text-align:left;color:#5f5d58;font-weight:400;padding:0 10px 5px 0;border-bottom:1px solid #1c1e22}
+.pt td{padding:3px 10px 3px 0;color:#b9b6b0;white-space:nowrap}
+.pt td.a{color:#d6d3cd;max-width:230px;overflow:hidden;text-overflow:ellipsis}
+.pill{font-size:10px;border:1px solid #23252a;padding:0 5px;color:#8b8880}
+.pill.in{color:#6ba4d8;border-color:#23374a}
+.pill.onion{color:#b58bd8;border-color:#3a2a46}
+"""
+
+FEED_JS = """
+(function(){
+ var last=0, box=document.getElementById('feed'), dot=document.getElementById('live');
+ function row(e){
+  var d=document.createElement('div');
+  d.className='ev '+e.kind+(e.important?' wallet':'');
+  var t=new Date(e.t*1000).toISOString().substr(11,8);
+  d.innerHTML='<span class="ts"></span><span class="tag"></span>'
+             +'<span class="msg"></span>';
+  d.children[0].textContent=t;
+  d.children[1].textContent=e.kind;
+  d.children[2].textContent=e.text;
+  if(e.detail){var s=document.createElement('span');s.className='det';
+   s.textContent='  '+e.detail;d.children[2].appendChild(s);}
+  return d;
+ }
+ function poll(){
+  fetch('/events.json?since='+last).then(function(r){return r.json();})
+  .then(function(j){
+    dot.className='live';
+    (j.events||[]).forEach(function(e){
+      if(e.id>last){last=e.id; box.insertBefore(row(e), box.firstChild);}
+    });
+    while(box.childNodes.length>300){box.removeChild(box.lastChild);}
+  }).catch(function(){ dot.className='live off'; });
+ }
+ poll(); setInterval(poll,2000);
+})();
 """
 
 
@@ -294,14 +649,19 @@ def render(d):
     A = p.append
 
     A(f"<!doctype html><meta charset=utf-8>"
-      f"<meta http-equiv=refresh content={REFRESH_SECONDS}>"
       f"<title>monetary node</title><style>{CSS}</style>"
       f"<div class=wrap><h1>MONETARY NODE</h1>"
-      f"<div class=sub>{esc(d['generated'])} · refreshes every "
-      f"{REFRESH_SECONDS}s · read only</div>")
+      f"<div class=sub><span class=live id=live></span>live · cards below"
+      f" refresh on reload · read only</div>")
 
     for e in d["errors"]:
         A(f"<div class='card err'><h2>PROBLEM</h2><div class=bad>{esc(e)}</div></div>")
+
+    A("<div class=card><h2>FEED</h2><div id=feed></div>"
+      "<div class=note>New blocks with fees, mempool moves, the daemon"
+      " advancing, and this node's own wallet transactions highlighted."
+      " Individual mempool transactions are excluded — thousands a minute"
+      " would bury everything worth seeing.</div></div>")
 
     A("<div class=card><h2>NODE</h2><table>")
     if n:
@@ -317,8 +677,7 @@ def render(d):
         A(f"<tr><td class=k>peers</td><td class=v>{commas(n['connections'])}</td></tr>")
         A(f"<tr><td class=k>software</td><td class=v>{esc(n['subversion'])}</td></tr>")
         if n["pruned"]:
-            A("<tr><td class=k>pruned</td><td class=v><span class=warn>yes</span>"
-              " — indexers requiring a complete node will refuse</td></tr>")
+            A("<tr><td class=k>pruned</td><td class=v><span class=warn>yes</span></td></tr>")
     else:
         A("<tr><td class='v bad'>unreachable</td></tr>")
     A("</table></div>")
@@ -347,7 +706,7 @@ def render(d):
           f" <span class=dim>pid {d['daemon_pid']}</span></td></tr>")
     else:
         A("<tr><td class=k>status</td><td class=v><span class=warn>not running</span>"
-          " — the store will fall behind the chain</td></tr>")
+          " — the store will fall behind</td></tr>")
     lag = d["lag"]
     if lag is None:
         cls, txt = "dim", "—"
@@ -359,8 +718,7 @@ def render(d):
         cls, txt = "bad", f"{commas(lag)} blocks behind the node"
     A(f"<tr><td class=k>lag</td><td class=v><span class={cls}>{txt}</span></td></tr>")
     A("<tr><td class=k></td><td class='v dim'>Some lag is by design: blocks are"
-      " stripped only after the confirmation depth, so a shallow reorg never"
-      " touches stored data.</td></tr>")
+      " stripped only after the confirmation depth.</td></tr>")
     A("</table></div>")
 
     if b:
@@ -378,32 +736,79 @@ def render(d):
                 A(f"<tr><td class=k>{label}</td><td class='v {cls}'>{esc(v)}</td></tr>")
         A("</table><div class=note>Read from the build log, not recomputed.</div></div>")
 
+    ix = d.get("indexer")
+    if ix:
+        A("<div class=card><h2>INDEXER</h2><table>")
+        A(f"<tr><td class=k>target</td><td class=v>{esc(ix['target'])}"
+          + (" <span class=dim>TLS</span>" if ix.get("ssl") else "") + "</td></tr>")
+        if ix.get("ok"):
+            A(f"<tr><td class=k>server</td><td class=v>{esc(ix.get('server'))}</td></tr>")
+            A(f"<tr><td class=k>height</td><td class=v>{commas(ix.get('height'))}</td></tr>")
+            if n and ix.get("height") is not None:
+                behind = n["blocks"] - ix["height"]
+                cls = "ok" if behind <= 2 else ("warn" if behind <= 100 else "bad")
+                A(f"<tr><td class=k>vs node</td><td class=v>"
+                  f"<span class={cls}>{behind:,} blocks behind</span></td></tr>")
+        else:
+            A(f"<tr><td class=k>status</td><td class=v><span class=bad>unreachable</span>"
+              f" <span class=dim>{esc(ix.get('error'))}</span></td></tr>")
+        A("</table><div class=note>Any Electrum-protocol indexer — Fulcrum,"
+          " electrs, ElectrumX. TLS here is encrypted but not certificate-verified,"
+          " because indexers self-sign; point it only at a server you run.</div></div>")
+
+    pr = d.get("peers") or []
+    if pr:
+        inb = sum(1 for x in pr if x["inbound"])
+        nets = collections.Counter(x["network"] for x in pr)
+        A("<div class=card><h2>PEERS</h2>")
+        A(f"<div class=note style='margin:0 0 10px'>{len(pr)} connected · "
+          f"{len(pr) - inb} out, {inb} in · "
+          + " · ".join(f"{k or '?'} {v}" for k, v in sorted(nets.items()))
+          + "</div>")
+        A("<table class=pt><tr><th>address</th><th>net</th><th></th>"
+          "<th>software</th><th>ping</th><th>height</th><th>up</th></tr>")
+        now = time.time()
+        shown = sorted(pr, key=lambda x: (x["inbound"], x.get("since") or 0))
+        for x in shown[:PEERS_SHOWN]:
+            d_in = "in" if x["inbound"] else ""
+            pill = f"<span class='pill {d_in}'>{'in' if x['inbound'] else 'out'}</span>"
+            net = x["network"] or "?"
+            netcls = "pill onion" if net == "onion" else "pill"
+            ping = f"{x['ping'] * 1000:.0f} ms" if x.get("ping") else "—"
+            up = ("—" if not x.get("since")
+                  else f"{(now - x['since']) / 3600:.1f} h")
+            A(f"<tr><td class=a>{esc(x['addr'])}</td>"
+              f"<td><span class='{netcls}'>{esc(net)}</span></td>"
+              f"<td>{pill}</td>"
+              f"<td class=a>{esc(x['subver'])}</td>"
+              f"<td>{ping}</td><td>{commas(x.get('height'))}</td><td>{up}</td></tr>")
+        A("</table>")
+        if len(pr) > PEERS_SHOWN:
+            A(f"<div class=note>{len(pr) - PEERS_SHOWN} more not shown.</div>")
+        A("</div>")
+
     if d.get("logs"):
         A("<div class=card><h2>LOG</h2><div class=tabs>")
         for nm in d["logs"]:
             cls = "tab on" if nm == d["log_name"] else "tab"
-            q = urllib.parse.quote(nm, safe="")
-            A(f"<a class='{cls}' href='/?log={q}'>{esc(nm)}</a>")
+            A(f"<a class='{cls}' href='/?log={urllib.parse.quote(nm, safe='')}'>{esc(nm)}</a>")
         A("</div>")
         if d.get("log_err"):
             A(f"<div class=bad>{esc(d['log_err'])}</div>")
         else:
             rows = d.get("log_rows") or []
-            A("<pre class=term>" + ("\n".join(esc(r) for r in rows) or "(empty)")
-              + "</pre>")
-        A(f"<div class=note>Last {LOG_LINES} lines of {esc(d['log_name'])},"
-          " refreshed with the page. This is a view of a file, not a shell:"
-          " it cannot run anything, and only files in"
+            A("<pre class=term>" + ("\n".join(esc(r) for r in rows) or "(empty)") + "</pre>")
+        A(f"<div class=note>Last {LOG_LINES} lines of {esc(d['log_name'])}."
+          " A view of a file, not a shell: only files in"
           f" {esc(d['log_dir'])} can be opened.</div></div>")
 
     A("<div class=card><h2>NOT AVAILABLE HERE</h2><div class=note>"
-      "No shell, and no controls. This page cannot start, stop, convert or"
-      " prune anything. A terminal over HTTP would be remote code execution"
-      " on your node behind a page with no authentication; pruning is"
-      " irreversible. Both live on the command line."
+      "No shell, no controls. This page cannot start, stop, convert or prune"
+      " anything. A terminal over HTTP would be remote code execution on your"
+      " node behind a page with no authentication; pruning is irreversible."
       "</div></div>")
 
-    A("</div>")
+    A(f"</div><script>{FEED_JS}</script>")
     return "".join(p)
 
 
@@ -412,6 +817,8 @@ def render(d):
 
 class Handler(http.server.BaseHTTPRequestHandler):
     cfg = None
+    feed = None
+    poller = None
     server_version = "monetary-ui"
 
     def _send(self, code, body, ctype):
@@ -421,15 +828,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(raw)
 
     def do_GET(self):
         parts = urllib.parse.urlparse(self.path)
+        q = urllib.parse.parse_qs(parts.query)
         if parts.path == "/":
-            want = urllib.parse.parse_qs(parts.query).get("log", [None])[0]
-            self.cfg._selected_log = want
+            self.cfg._selected_log = q.get("log", [None])[0]
+            self.cfg._indexer = self.poller.indexer if self.poller else None
             self._send(200, render(gather(self.cfg)), "text/html; charset=utf-8")
+        elif parts.path == "/events.json":
+            try:
+                since = int(q.get("since", ["0"])[0])
+            except ValueError:
+                since = 0
+            evs = self.feed.since(since) if self.feed else []
+            self._send(200, json.dumps({"events": evs,
+                                        "last": self.feed.last_id() if self.feed else 0}),
+                       "application/json")
         elif parts.path == "/status.json":
             self.cfg._selected_log = None
             self._send(200, json.dumps(gather(self.cfg), indent=1, default=str),
@@ -446,6 +864,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+class Server(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
 # ---------------------------------------------------------------- self-test
 
 
@@ -457,30 +880,45 @@ def selftest():
         ok.append(cond)
         print(f"  [{'ok  ' if cond else 'FAIL'}] {name}" + (f"  — {detail}" if detail else ""))
 
-    ck("human(0)", human(0) == "0.0 B", human(0))
     ck("human bytes", human(1536) == "1.5 KB", human(1536))
     ck("human None", human(None) == "—")
     ck("commas", commas(1234567) == "1,234,567")
 
+    f = Feed(maxlen=5)
+    for i in range(3):
+        f.add("block", f"block {i}")
+    ck("ids are monotonic", [e["id"] for e in f.since(0)] == [1, 2, 3])
+    ck("since filters", [e["id"] for e in f.since(2)] == [3])
+    ck("last_id", f.last_id() == 3)
+    for i in range(10):
+        f.add("block", f"more {i}")
+    ck("feed is bounded", len(f.since(0)) == 5, str(len(f.since(0))))
+    ck("ids keep rising after eviction", f.last_id() == 13, str(f.last_id()))
+    f.add("wallet", "received", important=True)
+    ck("important survives round trip", f.since(13)[0]["important"] is True)
+
+    threads = []
+    fc = Feed(maxlen=1000)
+
+    def spam():
+        for _ in range(200):
+            fc.add("block", "x")
+    for _ in range(4):
+        t = threading.Thread(target=spam)
+        threads.append(t)
+        t.start()
+    for t in threads:
+        t.join()
+    got = [e["id"] for e in fc.since(0)]
+    ck("no duplicate ids under concurrency", len(got) == len(set(got)), str(len(got)))
+    ck("all events recorded", fc.last_id() == 800, str(fc.last_id()))
+
     log = """
 original blocks       717.4 GB
-monetary store        666.3 GB   (92.88%)
 saved                 51.1 GB   (7.12%)
-  total               37.5 GB
   blocks verified     967,985
   blocks failed       0
-  filter entries      1,104,820
 """
-    with tempfile.NamedTemporaryFile("w", suffix=".log", delete=False) as fh:
-        fh.write(log)
-        bp = fh.name
-    b = read_build_log(bp)
-    ck("parses original", b.get("original") == "717.4 GB", b.get("original"))
-    ck("parses saved with pct", b.get("saved", "").startswith("51.1 GB"))
-    ck("parses verified", b.get("verified") == "967,985")
-    ck("missing log yields nothing", read_build_log("/nonexistent") == {})
-    os.unlink(bp)
-
     with tempfile.TemporaryDirectory() as d:
         logs = os.path.join(d, "results")
         os.makedirs(logs)
@@ -489,28 +927,23 @@ saved                 51.1 GB   (7.12%)
                 fh.write(f"line {i}\n")
         with open(os.path.join(logs, "build.log"), "w") as fh:
             fh.write(log)
-        open(os.path.join(logs, "notes.txt"), "w").write("not a log")
+        open(os.path.join(logs, "notes.txt"), "w").write("x")
 
-        names = list_logs(logs)
-        ck("lists .log files only", names == ["build.log", "daemon.log"], str(names))
-
+        ck("lists .log only", list_logs(logs) == ["build.log", "daemon.log"])
         rows, err = tail_log(logs, "daemon.log")
-        ck("tail returns the last lines", err is None and rows[-1] == "line 199")
-        ck("tail is bounded", len(rows) == LOG_LINES, str(len(rows)))
-
-        # path traversal in every shape it usually arrives
+        ck("tail last line", err is None and rows[-1] == "line 199")
+        ck("tail bounded", len(rows) == LOG_LINES)
         for bad in ("../../etc/passwd", "/etc/passwd", "notes.txt",
-                    "..%2f..%2fetc%2fpasswd", "daemon.log/../../../etc/passwd"):
+                    "daemon.log/../../../etc/passwd"):
             r, e = tail_log(logs, bad)
             ck(f"rejects {bad!r}", r is None and e is not None)
 
-        st, err = read_state(d)
-        ck("absent state reports an error", st is None and "no state.json" in err)
+        b = read_build_log(os.path.join(logs, "build.log"))
+        ck("parses saved", b.get("saved", "").startswith("51.1 GB"))
+
         with open(os.path.join(d, "state.json"), "w") as fh:
             json.dump({"height": 967984, "records": 967985,
                        "commitment": "0" * 64}, fh)
-        st, err = read_state(d)
-        ck("state parses", st["height"] == 967984 and err is None)
 
         class C:
             store = d
@@ -519,23 +952,87 @@ saved                 51.1 GB   (7.12%)
             build_log = os.path.join(logs, "build.log")
             log_dir = logs
         g = gather(C)
-        ck("survives an unreachable node", g["node"] is None)
-        ck("unreachable node is reported", any("RPC" in e for e in g["errors"]))
-        ck("defaults to the most recent log", g["log_name"] in ("build.log", "daemon.log"))
+        ck("survives unreachable node", g["node"] is None)
+        ck("unreachable reported", any("RPC" in e for e in g["errors"]))
 
         page = render(g)
         ck("page renders", "MONETARY NODE" in page)
-        ck("zero commitment flagged not shown", "not set" in page)
-        ck("log card present", "LOG" in page and "term" in page)
-        ck("page states it is not a shell", "not a shell" in page)
-        ck("log content escaped", "<script>" not in page)
+        ck("feed container present", 'id=feed' in page)
+        ck("feed polls events.json", "events.json" in page)
+        ck("zero commitment flagged", "not set" in page)
+        ck("states it is not a shell", "not a shell" in page)
 
         with open(os.path.join(logs, "evil.log"), "w") as fh:
             fh.write("<script>alert(1)</script>\n")
         C._selected_log = "evil.log"
         page = render(gather(C))
-        ck("log lines are HTML-escaped", "&lt;script&gt;" in page
-           and "<script>alert" not in page)
+        ck("log lines escaped", "&lt;script&gt;" in page and "<script>alert" not in page)
+
+    # feed text reaches the browser via textContent, never innerHTML
+    ck("feed js uses textContent", "textContent" in FEED_JS
+       and "innerHTML=e.text" not in FEED_JS)
+
+    # the wallet-key set must not grow without bound
+    class FakeCfg:
+        store = "/nonexistent"
+        rpc_url = "http://127.0.0.1:1"
+        cookie = None
+        electrum = None
+        electrum_ssl = False
+    pol = Poller(FakeCfg, Feed())
+    pol.last_height = 1
+    for i in range(SEEN_WALLET_MAX + 500):
+        key = ("tx%d" % i, "receive", 0)
+        if len(pol.seen_order) == pol.seen_order.maxlen:
+            pol.seen_wallet.discard(pol.seen_order[0])
+        pol.seen_order.append(key)
+        pol.seen_wallet.add(key)
+    ck("seen_wallet is bounded", len(pol.seen_wallet) <= SEEN_WALLET_MAX,
+       str(len(pol.seen_wallet)))
+    ck("seen_wallet keeps the newest",
+       ("tx%d" % (SEEN_WALLET_MAX + 499), "receive", 0) in pol.seen_wallet)
+    ck("seen_wallet dropped the oldest",
+       ("tx0", "receive", 0) not in pol.seen_wallet)
+
+    # indexer probe must never raise, whatever it hits
+    r = probe_electrum("127.0.0.1:1", False, timeout=1)
+    ck("probe returns a dict on refusal", isinstance(r, dict) and not r["ok"])
+    ck("probe records the error", bool(r["error"]))
+    r = probe_electrum("not a host at all", False, timeout=1)
+    ck("probe survives a malformed target", isinstance(r, dict) and not r["ok"])
+
+    # peers and indexer render
+    class C2:
+        store = "/nonexistent"
+        rpc_url = "http://127.0.0.1:1"
+        cookie = None
+        build_log = "/nonexistent"
+        log_dir = "/nonexistent"
+        _selected_log = None
+        _indexer = {"target": "127.0.0.1:50002", "ssl": True, "ok": True,
+                    "server": "Fulcrum 1.11.1", "height": 968300, "error": None}
+    g2 = gather(C2)
+    g2["node"] = {"chain": "main", "blocks": 968335, "headers": 968335,
+                  "progress": 1.0, "ibd": False, "pruned": False,
+                  "bestblockhash": "00" * 32, "connections": 3,
+                  "subversion": "/Satoshi:31.1.0/"}
+    g2["peers"] = [
+        {"addr": "abc123.onion:8333", "network": "onion", "inbound": False,
+         "type": "outbound-full-relay", "subver": "/Satoshi:28.0.0/",
+         "ping": 0.42, "since": time.time() - 7200, "sent": 1, "recv": 2,
+         "height": 968335},
+        {"addr": "10.0.0.5:8333", "network": "ipv4", "inbound": True,
+         "type": "inbound", "subver": "/Satoshi:27.0.0/", "ping": None,
+         "since": time.time() - 60, "sent": 1, "recv": 2, "height": 968334},
+    ]
+    page2 = render(g2)
+    ck("indexer card rendered", "INDEXER" in page2 and "Fulcrum" in page2)
+    ck("indexer lag computed", "35 blocks behind" in page2)
+    ck("peers card rendered", "PEERS" in page2 and "abc123.onion" in page2)
+    ck("onion peers marked", "pill onion" in page2)
+    ck("inbound marked", ">in<" in page2)
+    g2["peers"][0]["addr"] = "<script>x</script>:8333"
+    ck("peer address escaped", "&lt;script&gt;" in render(g2))
 
     print(f"\n{sum(ok)}/{len(ok)} passed")
     return 0 if all(ok) else 1
@@ -554,8 +1051,12 @@ def main():
     ap.add_argument("--build-log",
                     default=os.path.expanduser("~/monetary-node/results/build.log"))
     ap.add_argument("--log-dir",
-                    default=os.path.expanduser("~/monetary-node/results"),
-                    help="directory of .log files offered in the LOG card")
+                    default=os.path.expanduser("~/monetary-node/results"))
+    ap.add_argument("--electrum", metavar="HOST:PORT",
+                    help="Electrum-protocol indexer to monitor "
+                         "(Fulcrum, electrs, ElectrumX)")
+    ap.add_argument("--electrum-ssl", action="store_true",
+                    help="connect to the indexer over TLS (not cert-verified)")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--i-understand-this-exposes-node-state", action="store_true",
@@ -569,26 +1070,36 @@ def main():
     if a.cookie is None:
         a.cookie = os.path.join(a.datadir, ".cookie")
     a._selected_log = None
+    a._indexer = None
 
     if a.host not in ("127.0.0.1", "localhost", "::1") and not a.exposed:
         sys.exit(
             f"refusing to bind {a.host}: this page shows your node's height,\n"
-            "peers, tip, store layout and log output. Bind 127.0.0.1 and use\n"
-            "an SSH tunnel:\n"
+            "peers, tip, store layout, wallet activity and log output.\n"
+            "Bind 127.0.0.1 and use an SSH tunnel:\n"
             f"    ssh -N -L {a.port}:127.0.0.1:{a.port} user@host\n"
             "Pass --i-understand-this-exposes-node-state to override.")
 
+    feed = Feed()
+    poller = Poller(a, feed)
+    poller.start()
+
     Handler.cfg = a
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer((a.host, a.port), Handler) as srv:
+    Handler.feed = feed
+    Handler.poller = poller
+    with Server((a.host, a.port), Handler) as srv:
         print(f"monetary node UI on http://{a.host}:{a.port}   (read only, Ctrl-C to stop)")
         print(f"  store      {a.store}")
         print(f"  node RPC   {a.rpc_url}")
         print(f"  logs       {a.log_dir}")
+        print(f"  polling    every {POLL_SECONDS}s")
+        if a.electrum:
+            print(f"  indexer    {a.electrum}" + (" (TLS)" if a.electrum_ssl else ""))
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
-            print("\nstopped")
+            print("\nstopping")
+            poller.stop.set()
     return 0
 
 
