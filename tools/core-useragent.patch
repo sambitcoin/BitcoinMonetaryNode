@@ -1,0 +1,5 @@
+--- a/src/clientversion.cpp
++++ b/src/clientversion.cpp
+@@
+-const std::string CLIENT_NAME("Satoshi");
++const std::string CLIENT_NAME("monetarynode");
