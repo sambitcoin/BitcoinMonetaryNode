@@ -36,10 +36,18 @@ index da3d41c..0d415be 100644
      argsman.AddArg("-persistmempoolv1",
                     strprintf("Whether a mempool.dat file created by -persistmempool or the savemempool RPC will be written in the legacy format "
 diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
-index 8771c35..6bd7a9c 100644
+index 8771c35..6a4cf44 100644
 --- a/src/node/blockstorage.cpp
 +++ b/src/node/blockstorage.cpp
-@@ -171,12 +171,47 @@ std::string CBlockFileInfo::ToString() const
+@@ -19,6 +19,7 @@
+ #include <pow.h>
+ #include <primitives/block.h>
+ #include <primitives/transaction.h>
++#include <script/script.h>
+ #include <random.h>
+ #include <serialize.h>
+ #include <signet.h>
+@@ -171,12 +172,64 @@ std::string CBlockFileInfo::ToString() const
  
  namespace node {
  
@@ -47,17 +55,34 @@ index 8771c35..6bd7a9c 100644
 +
 +uint32_t SpamScore(const CBlock& block)
 +{
-+    // NOT IMPLEMENTED. Returning 0 makes -spamtiebreak a no-op, which is the
-+    // correct behaviour until a classifier is wired in here.
++    // PARTIAL. This covers only one carrier: OP_RETURN outputs above the
++    // historic datacarrier limit. The full classifier also detects inscription
++    // envelopes in witness data and off-curve keys in bare multisig and P2PK,
++    // and those are the large ones by volume -- 37.1 GB and 77.5 MB across the
++    // inscription era, against 12.3 MB for oversized OP_RETURN.
 +    //
-+    // The intended source is the project's existing carrier classifier
-+    // (inscription envelopes, off-curve keys in bare multisig and P2PK,
-+    // oversized OP_RETURN), reduced to a small number of buckets rather than
-+    // a byte count. It must be deterministic: two nodes scoring the same
-+    // block differently would disagree about the tip, which defeats the
-+    // purpose.
-+    (void)block;
-+    return 0;
++    // It is implemented first because it is cheap, unambiguous, and needs no
++    // curve arithmetic in the validation path. Do not mistake it for the
++    // finished metric.
++    static constexpr size_t DATACARRIER_LIMIT{83};
++
++    size_t carrier_bytes{0};
++    for (const auto& tx : block.vtx) {
++        for (const CTxOut& out : tx->vout) {
++            const CScript& spk{out.scriptPubKey};
++            if (!spk.empty() && spk[0] == OP_RETURN && spk.size() > DATACARRIER_LIMIT) {
++                carrier_bytes += spk.size();
++            }
++        }
++    }
++
++    // Buckets, not a byte count. Ranking blocks by exact bytes would make
++    // chain selection sensitive to classifier edge cases; buckets mean a
++    // false positive has to be large before it changes the answer.
++    if (carrier_bytes == 0) return 0;
++    if (carrier_bytes < 1'000) return 1;
++    if (carrier_bytes < 100'000) return 2;
++    return 3;
 +}
 +
  bool CBlockIndexWorkComparator::operator()(const CBlockIndex* pa, const CBlockIndex* pb) const

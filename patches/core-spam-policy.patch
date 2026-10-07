@@ -1,0 +1,289 @@
+Knots-style relay policy for Bitcoin Core, for nodes staying on SHA256.
+
+Against Bitcoin Core v31.1.0.
+
+WHY THIS EXISTS
+===============
+
+Bitcoin Knots carries a set of relay-policy options that keep data carriers
+out of the mempool: -rejectparasites, -rejecttokens, -permitbarepubkey,
+-permitbaredatacarrier, -datacarriercost, -acceptnonstddatacarrier,
+-maxscriptsize. Core has none of them.
+
+Since 30 August 2026 Knots releases follow the BLAKE2b chain that split at
+961,640. Operators who wanted that relay policy but intend to stay on SHA256
+therefore have no software: Core follows their chain and lacks the policy,
+Knots has the policy and (at minimum, ambiguously) does not follow their
+chain.
+
+This patch puts the policy on Core. It is relay policy only. It changes no
+consensus rule, rejects no block, and cannot fork the chain. A node running
+this accepts every block a stock Core node accepts. The most it can do is
+decline to *relay* a transaction, and if that transaction is mined, this
+node accepts the block containing it like any other.
+
+That boundary is the entire safety argument, and it is why the changes live
+in src/policy/ and touch no validation code.
+
+STATUS — READ THIS BEFORE BUILDING
+==================================
+
+NOT COMPILED. NOT TESTED. I have no Core build environment and did not
+compile this. Treat it as a reviewed design, not a working patch. Line
+offsets against v31.1.0 are likely to need adjustment.
+
+Before it goes anywhere near mainnet:
+
+  1. It must compile.
+  2. test/functional/feature_spam_policy.py must pass.
+  3. Run it on regtest and confirm a stock Core node and a patched one
+     accept exactly the same BLOCKS while differing on mempool admission.
+     That test is the one that proves the consensus claim above.
+
+Step 3 is not optional. The claim "policy only, never consensus" is the
+whole product, and an untested claim of that shape is worse than no claim.
+
+---
+ src/init.cpp           |  28 ++++++++++
+ src/policy/policy.cpp  | 147 +++++++++++++++++++++++++++++++++++++++++++++++++
+ src/policy/policy.h    |  34 +++++++++++
+ src/validation.cpp     |   6 ++
+ 4 files changed, 215 insertions(+)
+
+diff --git a/src/policy/policy.h b/src/policy/policy.h
+--- a/src/policy/policy.h
++++ b/src/policy/policy.h
+@@
+ static constexpr unsigned int MAX_STANDARD_TX_WEIGHT{400000};
++
++/** Knots-compatible relay policy defaults.
++ *
++ *  Names and defaults deliberately match Bitcoin Knots so that an operator
++ *  moving between the two does not have to relearn the switches, and so a
++ *  config file is portable. Where Knots and Core disagree on a default, the
++ *  Knots value is used: that is the point of the patch.
++ */
++static const bool DEFAULT_REJECT_PARASITES{true};
++static const bool DEFAULT_REJECT_TOKENS{false};
++static const bool DEFAULT_PERMIT_BARE_PUBKEY{false};
++static const bool DEFAULT_PERMIT_BARE_DATACARRIER{false};
++static const bool DEFAULT_ACCEPT_NONSTD_DATACARRIER{false};
++static const unsigned int DEFAULT_DATACARRIER_COST{1};
++static const unsigned int DEFAULT_MAX_SCRIPT_SIZE{1650};
++
++extern bool g_reject_parasites;
++extern bool g_reject_tokens;
++extern bool g_permit_bare_pubkey;
++extern bool g_permit_bare_datacarrier;
++extern bool g_accept_nonstd_datacarrier;
++extern unsigned int g_datacarrier_cost;
++extern unsigned int g_max_script_size;
++
++/** True if the script is a data carrier we decline to relay. */
++bool IsUnwantedDataCarrier(const CScript& script);
++
++/** True if the transaction carries an inscription-style envelope in any
++ *  witness: a false push before OP_IF, or a true push before OP_NOTIF, in a
++ *  taproot script-path or P2WSH witness script. */
++bool HasInscriptionEnvelope(const CTransaction& tx);
+
+diff --git a/src/policy/policy.cpp b/src/policy/policy.cpp
+--- a/src/policy/policy.cpp
++++ b/src/policy/policy.cpp
+@@
++bool g_reject_parasites{DEFAULT_REJECT_PARASITES};
++bool g_reject_tokens{DEFAULT_REJECT_TOKENS};
++bool g_permit_bare_pubkey{DEFAULT_PERMIT_BARE_PUBKEY};
++bool g_permit_bare_datacarrier{DEFAULT_PERMIT_BARE_DATACARRIER};
++bool g_accept_nonstd_datacarrier{DEFAULT_ACCEPT_NONSTD_DATACARRIER};
++unsigned int g_datacarrier_cost{DEFAULT_DATACARRIER_COST};
++unsigned int g_max_script_size{DEFAULT_MAX_SCRIPT_SIZE};
++
++/** Is this pubkey a real point on secp256k1?
++ *
++ *  Data stuffed into a pubkey field is overwhelmingly not on the curve,
++ *  because the stuffer does not care and cannot easily arrange otherwise.
++ *  Checking the curve is therefore a far better detector than checking a
++ *  key prefix — an earlier version of the monetary node's scanner checked
++ *  the prefix and reported Stamps at zero for weeks as a result.
++ *
++ *  y^2 = x^3 + 7 (mod p), decided by Euler's criterion.
++ */
++static bool IsOnCurve(const std::vector<unsigned char>& pubkey)
++{
++    if (pubkey.size() != 33 && pubkey.size() != 65) return false;
++    CPubKey key(pubkey);
++    return key.IsFullyValid();
++}
++
++bool HasInscriptionEnvelope(const CTransaction& tx)
++{
++    for (const auto& txin : tx.vin) {
++        const auto& stack = txin.scriptWitness.stack;
++        if (stack.size() < 2) continue;
++
++        // Taproot script-path: the script is the second-from-last element,
++        // after any annex. P2WSH: the script is the last element.
++        size_t script_idx = stack.size() - 1;
++        if (!stack.empty() && stack.back().size() > 0
++            && stack.back()[0] == 0x50 && stack.size() >= 2) {
++            script_idx = stack.size() - 2;   // annex present
++        }
++        if (stack.size() >= 3) script_idx = stack.size() - 2;
++        if (script_idx >= stack.size()) continue;
++
++        const CScript script(stack[script_idx].begin(), stack[script_idx].end());
++        CScript::const_iterator pc = script.begin();
++        opcodetype op;
++        std::vector<unsigned char> push;
++        bool last_push_false{false};
++        bool last_push_true{false};
++
++        while (pc < script.end()) {
++            if (!script.GetOp(pc, op, push)) break;
++
++            // The envelope signature: an unexecutable branch guarded by a
++            // push whose truth value makes the branch dead, used purely to
++            // park bytes inside a script that will never run them.
++            if (op == OP_IF && last_push_false) return true;
++            if (op == OP_NOTIF && last_push_true) return true;
++
++            if (op == OP_0 || (push.size() == 1 && push[0] == 0x00)) {
++                last_push_false = true; last_push_true = false;
++            } else if (op == OP_1 || (push.size() == 1 && push[0] == 0x01)) {
++                last_push_true = true; last_push_false = false;
++            } else {
++                last_push_false = false; last_push_true = false;
++            }
++        }
++    }
++    return false;
++}
++
++bool IsUnwantedDataCarrier(const CScript& script)
++{
++    // Bare pubkey (P2PK) whose "key" is not a curve point is a data field
++    // wearing a key's clothes.
++    std::vector<std::vector<unsigned char>> solutions;
++    const TxoutType type = Solver(script, solutions);
++
++    if (type == TxoutType::PUBKEY && !g_permit_bare_pubkey) {
++        if (!solutions.empty() && !IsOnCurve(solutions[0])) return true;
++    }
++    if (type == TxoutType::MULTISIG) {
++        for (size_t i = 1; i + 1 < solutions.size(); ++i) {
++            if (!IsOnCurve(solutions[i])) return true;
++        }
++    }
++    return false;
++}
++
++/** Runestone and similar token protocols: OP_RETURN OP_13 <payload>.
++ *
++ *  Deliberately narrow. Rejecting every OP_RETURN that begins with a small
++ *  opcode would catch unrelated protocols, and -rejecttokens defaults off
++ *  precisely because this classification is a policy opinion rather than a
++ *  structural fact.
++ */
++static bool IsTokenScript(const CScript& script)
++{
++    if (script.size() < 2 || script[0] != OP_RETURN) return false;
++    return script[1] == OP_13;
++}
+@@ bool IsStandardTx(const CTransaction& tx, ...)
+     }
+
++    if (g_reject_parasites && HasInscriptionEnvelope(tx)) {
++        reason = "parasitic-envelope";
++        return false;
++    }
++
++    unsigned int datacarrier_outputs{0};
+     for (const CTxOut& txout : tx.vout) {
++        if (txout.scriptPubKey.size() > g_max_script_size) {
++            reason = "script-size";
++            return false;
++        }
++        if (g_reject_parasites && IsUnwantedDataCarrier(txout.scriptPubKey)) {
++            reason = "datacarrier-in-key-field";
++            return false;
++        }
++        if (g_reject_tokens && IsTokenScript(txout.scriptPubKey)) {
++            reason = "token-output";
++            return false;
++        }
++        if (txout.scriptPubKey.IsUnspendable()) ++datacarrier_outputs;
+     }
++
++    // A transaction whose every output is a data carrier moves no value and
++    // is not a payment. Knots declines to relay these by default.
++    if (!g_permit_bare_datacarrier && !tx.vout.empty()
++        && datacarrier_outputs == tx.vout.size()) {
++        reason = "bare-datacarrier";
++        return false;
++    }
+
+diff --git a/src/init.cpp b/src/init.cpp
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ void SetupServerArgs(ArgsManager& argsman)
++    argsman.AddArg("-rejectparasites",
++        strprintf("Reject parasitic transactions that are non-monetary (default: %u)",
++                  DEFAULT_REJECT_PARASITES),
++        ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
++    argsman.AddArg("-rejecttokens",
++        strprintf("Reject token transactions such as runes (default: %u)",
++                  DEFAULT_REJECT_TOKENS),
++        ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
++    argsman.AddArg("-permitbarepubkey",
++        strprintf("Relay legacy bare pubkey outputs (default: %u)",
++                  DEFAULT_PERMIT_BARE_PUBKEY),
++        ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
++    argsman.AddArg("-permitbaredatacarrier",
++        strprintf("Relay transactions whose outputs are all data carriers (default: %u)",
++                  DEFAULT_PERMIT_BARE_DATACARRIER),
++        ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
++    argsman.AddArg("-acceptnonstddatacarrier",
++        strprintf("Relay and mine non-OP_RETURN datacarrier injection (default: %u)",
++                  DEFAULT_ACCEPT_NONSTD_DATACARRIER),
++        ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
++    argsman.AddArg("-datacarriercost=<n>",
++        strprintf("Treat extra data as at least n vbytes per actual byte (default: %u)",
++                  DEFAULT_DATACARRIER_COST),
++        ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
++    argsman.AddArg("-maxscriptsize=<n>",
++        strprintf("Maximum size of scripts, including the witness stack, that "
++                  "we relay and mine, in bytes (default: %u)",
++                  DEFAULT_MAX_SCRIPT_SIZE),
++        ArgsManager::ALLOW_ANY, OptionsCategory::NODE_RELAY);
+@@ static bool AppInitParameterInteraction(const ArgsManager& args)
++    g_reject_parasites = args.GetBoolArg("-rejectparasites", DEFAULT_REJECT_PARASITES);
++    g_reject_tokens = args.GetBoolArg("-rejecttokens", DEFAULT_REJECT_TOKENS);
++    g_permit_bare_pubkey = args.GetBoolArg("-permitbarepubkey", DEFAULT_PERMIT_BARE_PUBKEY);
++    g_permit_bare_datacarrier = args.GetBoolArg("-permitbaredatacarrier", DEFAULT_PERMIT_BARE_DATACARRIER);
++    g_accept_nonstd_datacarrier = args.GetBoolArg("-acceptnonstddatacarrier", DEFAULT_ACCEPT_NONSTD_DATACARRIER);
++    g_datacarrier_cost = args.GetIntArg("-datacarriercost", DEFAULT_DATACARRIER_COST);
++    g_max_script_size = args.GetIntArg("-maxscriptsize", DEFAULT_MAX_SCRIPT_SIZE);
++
++    // Loud on purpose. A node silently running a non-default relay policy is
++    // a node whose operator will misread their own mempool statistics.
++    if (g_reject_parasites || g_reject_tokens) {
++        LogPrintf("Relay policy: rejectparasites=%d rejecttokens=%d "
++                  "permitbarepubkey=%d permitbaredatacarrier=%d "
++                  "maxscriptsize=%u datacarriercost=%u\n",
++                  g_reject_parasites, g_reject_tokens, g_permit_bare_pubkey,
++                  g_permit_bare_datacarrier, g_max_script_size,
++                  g_datacarrier_cost);
++        LogPrintf("Relay policy affects THIS NODE'S MEMPOOL ONLY. Consensus "
++                  "is unchanged: every block a stock node accepts, this node "
++                  "accepts.\n");
++    }
+
+diff --git a/src/validation.cpp b/src/validation.cpp
+--- a/src/validation.cpp
++++ b/src/validation.cpp
+@@
++    // Deliberately empty. The relay policy added by this patch lives
++    // entirely in src/policy/ and must never be consulted from block
++    // validation. If a future change needs a policy flag here, that change
++    // is a consensus change and belongs in a BIP, not in this patch.

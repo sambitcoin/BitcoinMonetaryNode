@@ -4,19 +4,22 @@ wallet_check.py — does a monetary store still answer wallet questions correctl
 
 Spam removal that breaks balances or transaction history is a storage
 experiment, not a node. This computes balance and history for a set of
-addresses directly from a monetary store, then asks a real Electrum server the
-same questions and diffs the answers.
+addresses directly from a monetary store, then asks an Electrum server the same
+questions and diffs the answers.
 
-The point is that electrs is an independent implementation reading complete
-block data. If the stripped store agrees with it, the removal did not damage
-anything a wallet depends on. If it disagrees, we learn exactly where.
+The reference can be your own electrs/ElectrumX, or a public server. A public
+server is arguably the stronger reference: someone else's node, indexing
+complete block data, sharing no code or configuration with this project.
 
-WHAT TO TEST. Agreement on ordinary payments proves little. The sample should
-be hostile: addresses that funded inscriptions, addresses that received
-stamp-style bare multisig outputs, and addresses touched by the 615 fully
-stripped transactions — those lost their inputs, so the link from a spent
-output to its spending transaction is gone, and this is where that should
-surface.
+PRIVACY. Querying a public server reveals which scripthashes you are interested
+in. For addresses sampled at random from an old block that means little. Never
+point this at your own addresses.
+
+WHAT TO TEST. Agreement on ordinary payments proves little. A good sample is
+hostile: addresses that funded inscriptions, addresses that received
+stamp-style bare multisig outputs, and addresses touched by fully stripped
+transactions — those lost their inputs, so the link from a spent output to its
+spending transaction is gone, and this is where that should surface.
 
 METHOD. One pass over the store, bounded memory. For each transaction:
 
@@ -24,7 +27,10 @@ METHOD. One pass over the store, bounded memory. For each transaction:
   - inputs spending a watched outpoint mark it spent
 
 Chain order guarantees an output is seen before anything spends it, so a single
-pass is sufficient and no UTXO database is needed.
+pass suffices and no UTXO database is needed.
+
+The scan and the comparison are separate steps. Scan once with --json, then
+compare as often as you like without re-reading 247 GB.
 
 KNOWN LIMITS, stated up front so a disagreement is not mistaken for a bug:
 
@@ -34,16 +40,28 @@ KNOWN LIMITS, stated up front so a disagreement is not mistaken for a bug:
   - Dropped outputs are recovered from filter entries, so spam outputs paying a
     watched script are still counted.
   - Heights are derived by counting records from --start-height, since the
-    store does not record heights per block. Records are written in chain order,
-    so this is exact provided the store is contiguous.
+    store does not record a height per block. Records are written in chain
+    order, so this is exact provided the store is contiguous.
+  - Balances count only outputs created within the scanned range. An address
+    funded before --start-height will differ legitimately. Compare in-range
+    history counts, which is what this tool reports.
 
 Usage:
-    python3 wallet_check.py --store ~/mstore --start-height 767430 \\
-        --addresses addr.txt --electrum 127.0.0.1:50001
+    # scan the store, save the result
+    python3 wallet_check.py --store ~/mstore_test --start-height 900000 \\
+        --addresses addr.txt --json scan.json
 
-    # store only, no comparison
+    # compare against a local server
+    python3 wallet_check.py --compare scan.json --electrum 127.0.0.1:50001
+
+    # compare against a public server over TLS
+    python3 wallet_check.py --compare scan.json \\
+        --electrum electrum.blockstream.info:50002 --ssl
+
+    # both at once
     python3 wallet_check.py --store ~/mstore --start-height 767430 \\
-        --addresses addr.txt
+        --addresses addr.txt --json scan.json \\
+        --electrum electrum.blockstream.info:50002 --ssl
 
     python3 wallet_check.py --selftest
 
@@ -61,8 +79,13 @@ import sys
 import time
 
 STORE_MAGIC = b"MBLK"
-STORE_VERSION = 1
 FLAG_WHOLE, FLAG_MODIFIED, FLAG_STRIPPED = 0, 1, 2
+
+PUBLIC_SERVERS = [
+    "electrum.blockstream.info:50002",
+    "electrum.emzy.de:50002",
+    "electrum.bitaroo.net:50002",
+]
 
 
 def sha256(b):
@@ -160,7 +183,7 @@ def convertbits(data, frm, to, pad=True):
 
 def address_to_script(addr):
     """Return the scriptPubKey for a mainnet address."""
-    if addr.startswith(("bc1", "BC1")):
+    if addr.lower().startswith("bc1"):
         hrp, data, const = bech32_decode(addr)
         if hrp != "bc":
             raise ValueError(f"not mainnet: {hrp}")
@@ -174,8 +197,7 @@ def address_to_script(addr):
             return bytes([0x00, len(prog)]) + prog
         if const != "bech32m":
             raise ValueError("v1+ must use bech32m")
-        op = 0x50 + ver
-        return bytes([op, len(prog)]) + prog
+        return bytes([0x50 + ver, len(prog)]) + prog
 
     body = b58decode_check(addr)
     ver, payload = body[0], body[1:]
@@ -336,13 +358,11 @@ def scan(path, start_height, targets, progress=10000):
     """
     One pass over the store, collecting everything touching the target scripts.
 
-    targets maps scripthash -> label. Returns per-scripthash balance, history
-    and the count of stripped transactions encountered (which bound how much
-    could have been missed).
+    targets maps scripthash -> address label.
     """
     watched = {}          # (txid, vout) -> (scripthash, amount)
-    result = {sh: {"confirmed": 0, "history": {}, "utxos": 0}
-              for sh in targets}
+    result = {sh: {"address": a, "confirmed": 0, "utxos": 0, "history": {}}
+              for sh, a in targets.items()}
     stripped_seen = 0
     blocks = 0
     t0 = time.time()
@@ -363,37 +383,60 @@ def scan(path, start_height, targets, progress=10000):
                     sh, amount = hit
                     result[sh]["confirmed"] -= amount
                     result[sh]["utxos"] -= 1
-                    result[sh]["history"][txid] = height
+                    result[sh]["history"][txid[::-1].hex()] = height
 
-            # outputs retained in the store, plus any recovered from filters
-            allouts = list(vout) + dropped.get(txid, [])
-            for vout_i, amount, spk in allouts:
+            for vout_i, amount, spk in list(vout) + dropped.get(txid, []):
                 sh = scripthash(spk)
                 if sh in result:
                     watched[(txid, vout_i)] = (sh, amount)
                     result[sh]["confirmed"] += amount
                     result[sh]["utxos"] += 1
-                    result[sh]["history"][txid] = height
+                    result[sh]["history"][txid[::-1].hex()] = height
 
         blocks += 1
         if blocks % progress == 0:
             el = time.time() - t0
-            print(f"  {blocks:,} blocks  height {height:,}  "
-                  f"{el:.0f}s  watching {len(watched):,} outpoints",
-                  flush=True)
+            print(f"  {blocks:,} blocks  height {height:,}  {el:.0f}s  "
+                  f"watching {len(watched):,} outpoints", flush=True)
 
-    return result, stripped_seen, blocks
+    return {
+        "store": os.path.abspath(path),
+        "start_height": start_height,
+        "blocks": blocks,
+        "end_height": start_height + blocks - 1,
+        "stripped_transactions": stripped_seen,
+        "scan_seconds": round(time.time() - t0, 1),
+        "addresses": result,
+    }
 
 
 # ---------------------------------------------------------------- electrum
 
 
 class Electrum:
-    def __init__(self, hostport, timeout=30):
+    """
+    Minimal Electrum protocol client.
+
+    Speaks the JSON-RPC that electrs, ElectrumX and Fulcrum all implement, so
+    any of them serves as a reference. Public servers use TLS on port 50002.
+    """
+
+    def __init__(self, hostport, use_ssl=False, timeout=30):
         host, _, port = hostport.partition(":")
-        self.sock = socket.create_connection((host, int(port or 50001)),
-                                             timeout=timeout)
-        self.fh = self.sock.makefile("rwb")
+        port = int(port or (50002 if use_ssl else 50001))
+        sock = socket.create_connection((host, port), timeout=timeout)
+        if use_ssl:
+            import ssl as _ssl
+            # Public Electrum servers commonly present self-signed
+            # certificates. We are reading public chain data and comparing it
+            # against a local store, so the certificate chain is not what the
+            # result rests on.
+            ctx = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
+            sock = ctx.wrap_socket(sock, server_hostname=host)
+        self.sock = sock
+        self.fh = sock.makefile("rwb")
         self.n = 0
 
     def call(self, method, params):
@@ -404,11 +447,15 @@ class Electrum:
         self.fh.flush()
         line = self.fh.readline()
         if not line:
-            raise IOError("electrum server closed the connection")
+            raise IOError("server closed the connection")
         resp = json.loads(line)
-        if "error" in resp and resp["error"]:
-            raise IOError(f"electrum error: {resp['error']}")
+        if resp.get("error"):
+            raise IOError(f"server error: {resp['error']}")
         return resp["result"]
+
+    def tip(self):
+        r = self.call("blockchain.headers.subscribe", [])
+        return r.get("height", 0)
 
     def balance(self, sh):
         return self.call("blockchain.scripthash.get_balance", [sh])
@@ -424,6 +471,79 @@ class Electrum:
             pass
 
 
+def compare(scanned, hostport, use_ssl):
+    start = scanned["start_height"]
+    end = scanned["end_height"]
+
+    print(f"connecting to {hostport}{' over TLS' if use_ssl else ''}...")
+    el = Electrum(hostport, use_ssl)
+    try:
+        tip = el.tip()
+        print(f"reference tip: {tip:,}")
+        if tip < end:
+            print(f"WARNING: the reference is only synced to {tip:,} but the "
+                  f"store covers up to {end:,}.")
+            print("Disagreements above the reference tip would be the "
+                  "reference's fault, not the store's.")
+        print()
+
+        agree = differ = 0
+        for sh, r in scanned["addresses"].items():
+            print("=" * 70)
+            print(r["address"])
+            store_hist = r["history"]
+            print(f"  store      balance {r['confirmed']:,} sat   "
+                  f"utxos {r['utxos']:,}   history {len(store_hist):,} tx "
+                  f"(heights {start:,}-{end:,})")
+
+            try:
+                eb = el.balance(sh)
+                eh = el.history(sh)
+            except Exception as e:
+                print(f"  query failed: {e}")
+                continue
+
+            in_range = [h for h in eh
+                        if start <= h.get("height", 0) <= end]
+            print(f"  reference  balance {eb.get('confirmed', 0):,} sat   "
+                  f"history {len(eh):,} tx total, {len(in_range):,} in range")
+
+            ref_txids = {h["tx_hash"] for h in in_range}
+            missing = ref_txids - set(store_hist)
+            extra = set(store_hist) - ref_txids
+
+            if not missing and not extra:
+                agree += 1
+                print("  MATCH — in-range history identical")
+            else:
+                differ += 1
+                print(f"  DIFFERS — {len(missing)} missing from store, "
+                      f"{len(extra)} extra in store")
+                for tx in list(missing)[:5]:
+                    h = next(x["height"] for x in in_range
+                             if x["tx_hash"] == tx)
+                    print(f"    missing: {tx}  height {h:,}")
+                for tx in list(extra)[:5]:
+                    print(f"    extra:   {tx}  height "
+                          f"{store_hist[tx]:,}")
+
+        print()
+        print("=" * 70)
+        print(f"agree {agree}   differ {differ}")
+        print()
+        if differ == 0 and agree:
+            print("The monetary store returned the same transaction history as")
+            print("an independent Electrum server reading complete block data,")
+            print("for every address tested. Spam removal did not damage what a")
+            print("wallet depends on.")
+        print()
+        print("Lifetime balances are not compared: the store covers one height")
+        print("range, so an address funded earlier differs legitimately. The")
+        print("in-range history comparison is the meaningful one.")
+    finally:
+        el.close()
+
+
 # ---------------------------------------------------------------- selftest
 
 
@@ -436,60 +556,49 @@ def selftest():
               + (f"  — {detail}" if detail else ""))
 
     print("address decoding")
-    # Genesis coinbase address, P2PKH
     spk = address_to_script("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa")
     check("P2PKH decodes to the right script shape",
           spk[:3] == b"\x76\xa9\x14" and spk[-2:] == b"\x88\xac"
           and len(spk) == 25)
 
-    # BIP173 test vector
     spk = address_to_script("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
     check("P2WPKH matches BIP173 vector",
-          spk.hex() == "0014751e76e8199196d454941c45d1b3a323f1433bd6",
-          spk.hex())
+          spk.hex() == "0014751e76e8199196d454941c45d1b3a323f1433bd6")
 
     spk = address_to_script(
         "bc1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3qccfmv3")
     check("P2WSH decodes to 34 bytes", len(spk) == 34 and spk[0] == 0x00)
 
-    # BIP350 taproot vector
     spk = address_to_script(
         "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj0")
     check("P2TR uses bech32m and OP_1", spk[0] == 0x51 and len(spk) == 34)
 
-    try:
-        address_to_script("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5")
-        bad = False
-    except ValueError:
-        bad = True
-    check("bad checksum rejected", bad)
-
-    try:
-        address_to_script(
-            "bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj1")
-        bad = False
-    except ValueError:
-        bad = True
-    check("bech32m checksum enforced for taproot", bad)
+    for bad_addr, why in [
+            ("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t5", "bad checksum"),
+            ("bc1p0xlxvlhemja6c4dqv22uapctqupfhlxm9h8z3k2e72q4k9hcz7vqzk5jj1",
+             "bech32m enforced")]:
+        try:
+            address_to_script(bad_addr)
+            caught = False
+        except ValueError:
+            caught = True
+        check(f"{why} rejected", caught)
 
     print("\nscript hashing")
-    # Electrum's scripthash is SHA256 reversed; check against a known pairing
     spk = bytes.fromhex("0014751e76e8199196d454941c45d1b3a323f1433bd6")
     check("scripthash is reversed sha256",
           scripthash(spk) == sha256(spk)[::-1].hex())
 
     print("\ntransaction parsing")
-    # minimal legacy tx: 1 input, 1 output
     tx = (struct.pack("<i", 1) + b"\x01" + b"\xaa" * 32 + struct.pack("<I", 0)
           + b"\x00" + struct.pack("<I", 0xFFFFFFFF)
           + b"\x01" + struct.pack("<Q", 5000) + b"\x02\x51\x20"
           + struct.pack("<I", 0))
     txid, vin, vout = parse_tx(tx)
-    check("legacy tx parses", len(vin) == 1 and len(vout) == 1
-          and vout[0][1] == 5000)
-    check("txid is double sha of the whole legacy body", txid == dsha(tx))
+    check("legacy tx parses",
+          len(vin) == 1 and len(vout) == 1 and vout[0][1] == 5000)
+    check("txid is double sha of the legacy body", txid == dsha(tx))
 
-    # segwit tx: witness must be excluded from the txid
     base = (struct.pack("<i", 1) + b"\x01" + b"\xbb" * 32
             + struct.pack("<I", 0) + b"\x00" + struct.pack("<I", 0xFFFFFFFF)
             + b"\x01" + struct.pack("<Q", 9000) + b"\x02\x51\x20")
@@ -513,16 +622,40 @@ def main():
     ap.add_argument("--store")
     ap.add_argument("--start-height", type=int)
     ap.add_argument("--addresses", help="file with one address per line")
+    ap.add_argument("--json", help="write scan results here")
+    ap.add_argument("--compare", metavar="JSON",
+                    help="compare a saved scan instead of rescanning")
     ap.add_argument("--electrum", help="host:port of an Electrum server")
+    ap.add_argument("--ssl", action="store_true",
+                    help="use TLS (public servers, usually port 50002)")
+    ap.add_argument("--list-servers", action="store_true")
     ap.add_argument("--progress", type=int, default=10000)
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
     if args.selftest:
         sys.exit(selftest())
+
+    if args.list_servers:
+        print("Public Electrum servers (TLS, use --ssl):")
+        for s in PUBLIC_SERVERS:
+            print(f"  {s}")
+        print()
+        print("Querying a public server reveals which scripthashes you are")
+        print("interested in. Use sampled addresses, never your own.")
+        return
+
+    if args.compare:
+        with open(args.compare) as f:
+            scanned = json.load(f)
+        if not args.electrum:
+            sys.exit("--compare needs --electrum")
+        compare(scanned, args.electrum, args.ssl)
+        return
+
     if not (args.store and args.start_height is not None and args.addresses):
         sys.exit("need --store, --start-height and --addresses "
-                 "(or --selftest)")
+                 "(or --compare, --selftest, --list-servers)")
 
     addrs = []
     with open(args.addresses) as f:
@@ -531,7 +664,7 @@ def main():
             if line and not line.startswith("#"):
                 addrs.append(line)
     if not addrs:
-        sys.exit("no addresses given")
+        sys.exit("no addresses in the file")
 
     targets = {}
     for a in addrs:
@@ -542,89 +675,38 @@ def main():
     if not targets:
         sys.exit("no usable addresses")
 
-    print(f"watching {len(targets)} addresses across the store")
+    print(f"watching {len(targets)} addresses")
     print(f"store      {args.store}")
-    print(f"heights    from {args.start_height:,}")
+    print(f"from       height {args.start_height:,}")
     print()
 
-    t0 = time.time()
-    result, stripped_seen, blocks = scan(args.store, args.start_height,
-                                         targets, args.progress)
+    scanned = scan(args.store, args.start_height, targets, args.progress)
+
     print()
-    print(f"scanned {blocks:,} blocks in {time.time()-t0:.0f}s")
-    print(f"fully stripped transactions encountered: {stripped_seen:,}")
+    print(f"scanned {scanned['blocks']:,} blocks "
+          f"({scanned['start_height']:,}-{scanned['end_height']:,}) "
+          f"in {scanned['scan_seconds']:.0f}s")
+    print(f"fully stripped transactions encountered: "
+          f"{scanned['stripped_transactions']:,}")
     print()
 
-    el = None
+    touched = 0
+    for _sh, r in scanned["addresses"].items():
+        if r["history"]:
+            touched += 1
+            print(f"  {r['address']}  balance {r['confirmed']:,} sat  "
+                  f"{len(r['history'])} tx")
+    print()
+    print(f"{touched} of {len(targets)} addresses had activity in range")
+
+    if args.json:
+        with open(args.json, "w") as f:
+            json.dump(scanned, f, indent=1)
+        print(f"scan written to {args.json}")
+
     if args.electrum:
-        try:
-            el = Electrum(args.electrum)
-        except Exception as e:
-            print(f"could not reach electrum at {args.electrum}: {e}",
-                  file=sys.stderr)
-
-    agree = disagree = 0
-    for sh, addr in targets.items():
-        r = result[sh]
-        print("=" * 68)
-        print(addr)
-        print(f"  store    balance {r['confirmed']:,} sat   "
-              f"utxos {r['utxos']:,}   history {len(r['history']):,} txs")
-
-        if el:
-            try:
-                eb = el.balance(sh)
-                eh = el.history(sh)
-            except Exception as e:
-                print(f"  electrum query failed: {e}")
-                continue
-            e_conf = eb.get("confirmed", 0)
-            e_hist = len(eh)
-            # electrs reports the whole chain; the store covers one range, so
-            # only compare history entries inside that range
-            e_in_range = sum(1 for h in eh
-                             if h.get("height", 0) >= args.start_height)
-            print(f"  electrs  balance {e_conf:,} sat   "
-                  f"history {e_hist:,} txs ({e_in_range:,} in range)")
-
-            bal_match = e_conf == r["confirmed"]
-            hist_match = e_in_range == len(r["history"])
-            if bal_match and hist_match:
-                agree += 1
-                print("  MATCH")
-            else:
-                disagree += 1
-                print("  DIFFERS", end="")
-                if not bal_match:
-                    print(f"   balance delta "
-                          f"{r['confirmed'] - e_conf:+,} sat", end="")
-                if not hist_match:
-                    print(f"   history delta "
-                          f"{len(r['history']) - e_in_range:+,} txs", end="")
-                print()
-                missing = [h["tx_hash"] for h in eh
-                           if h.get("height", 0) >= args.start_height
-                           and bytes.fromhex(h["tx_hash"])[::-1]
-                           not in r["history"]]
-                for tx in missing[:5]:
-                    print(f"    missing from store: {tx}")
-
-    if el:
-        el.close()
         print()
-        print("=" * 68)
-        print(f"agree {agree}   differ {disagree}")
-        if disagree == 0:
-            print()
-            print("The monetary store answered every balance and history query")
-            print("identically to an independent Electrum server reading")
-            print("complete block data. Spam removal did not damage anything a")
-            print("wallet depends on.")
-
-    print()
-    print("NOTE: balances count only outputs created within the scanned range.")
-    print("Addresses funded before --start-height will differ legitimately;")
-    print("compare the in-range history counts rather than lifetime balance.")
+        compare(scanned, args.electrum, args.ssl)
 
 
 if __name__ == "__main__":

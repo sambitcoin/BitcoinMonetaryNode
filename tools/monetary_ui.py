@@ -52,7 +52,8 @@ MEMPOOL_REPORT_DELTA = 400
 SEEN_WALLET_MAX = 2000
 PEERS_SHOWN = 25
 HEARTBEAT_EVERY = 5          # polls between keep-alive ticks (5 x 3s = 15s)
-QUIP_ODDS = 60               # roughly one feed line in 60
+QUIP_ODDS = 100              # roughly one feed line in 100
+RECENT_TAIL_BYTES = 65536    # how much of recent.jsonl to read per poll
 
 # Lightning address for the project. A plain string rendered server-side —
 # no wallet interaction, no QR fetched from anywhere, nothing that talks to
@@ -65,6 +66,19 @@ try:
 except Exception:
     def maybe_quip(rng=None, chance=0):
         return None
+
+# The settings catalogue. Optional on purpose: the dashboard is useful without
+# the panel, and a missing module should cost you one card, not the page.
+try:
+    import node_settings as ns
+except Exception:
+    ns = None
+
+# The race observer. Same reasoning: optional, and its absence costs one card.
+try:
+    import tip_race as tr
+except Exception:
+    tr = None
 
 
 # ---------------------------------------------------------------- node RPC
@@ -211,6 +225,10 @@ class Poller(threading.Thread):
         self.beats = 0
         self.tor_warned = False
         self.tor_state = None
+        # Highest height already reported from recent.jsonl. Starts at the
+        # store tip so a restart does not replay the last 2000 blocks.
+        self.recent_seen = None
+        self.race_seen = None
 
     def say(self, kind, text, detail=None, important=False):
         """Add an event, and occasionally follow it with editorial."""
@@ -257,10 +275,47 @@ class Poller(threading.Thread):
 
         self.mempool_event(r)
         self.store_event()
+        self.race_event()
         self.wallet_event(r)
         self.indexer_event()
         self.tor_event(r)
         self.heartbeat(r, info)
+
+    def race_event(self):
+        """Report races tip_race.py has written down.
+
+        Reads the log rather than polling getchaintips itself: one watcher
+        with one window, and the dashboard reports rather than duplicates."""
+        if tr is None:
+            return
+        try:
+            races = tr.load_races(self.cfg.store)
+        except Exception:
+            return
+        if self.race_seen is None:
+            # Start from what is already recorded, so a dashboard restart
+            # does not replay months of history into the feed.
+            self.race_seen = max((r.get("h", 0) for r in races), default=0)
+            return
+        for r in races:
+            h = r.get("h", 0)
+            if h <= self.race_seen:
+                continue
+            self.race_seen = h
+            w, l = r.get("winner") or {}, r.get("loser") or {}
+            wc, lc = w.get("carriers"), l.get("carriers")
+            if wc is None or lc is None:
+                verdict = "one side never arrived as a full block"
+            elif wc < lc:
+                verdict = (f"the cleaner block survived — kept {human(wc)} "
+                           f"of carriers, network discarded {human(lc)}")
+            elif wc > lc:
+                verdict = (f"the dirtier block survived — kept {human(wc)} "
+                           f"of carriers, network discarded {human(lc)}")
+            else:
+                verdict = "both carried the same; the race says nothing"
+            self.say("race", f"competing blocks at {h:,}", verdict,
+                     important=True)
 
     def block_event(self, r, height):
         try:
@@ -300,10 +355,40 @@ class Poller(threading.Thread):
         h = state.get("height")
         if self.last_store_height is None:
             self.last_store_height = h
-        elif h > self.last_store_height:
-            self.say("store", f"stripped to {h:,}",
-                     f"+{h - self.last_store_height} blocks into the store")
+            self.recent_seen = h
+            return
+        if h > self.last_store_height:
             self.last_store_height = h
+        self.garbage_events()
+
+    def garbage_events(self):
+        """What each block actually cost, from the daemon's per-block log.
+
+        This is the number the whole project is about, so it gets its own feed
+        line rather than being buried in a total. Reported per block because
+        "7.12% of the chain" is an argument and "168 KB out of this block" is
+        something you can watch happen."""
+        for rec in read_recent(self.cfg.store, after=self.recent_seen):
+            self.recent_seen = max(self.recent_seen or 0, rec["h"])
+            thrown = rec["in"] - rec["out"]
+            pct = (thrown / rec["in"] * 100) if rec["in"] else 0.0
+            bits = []
+            if rec.get("env"):
+                bits.append(f"{human(rec['env'])} envelopes")
+            if rec.get("opr"):
+                bits.append(f"{human(rec['opr'])} OP_RETURN")
+            if rec.get("ms"):
+                bits.append(f"{human(rec['ms'])} bare multisig")
+            if rec.get("ss"):
+                bits.append(f"{human(rec['ss'])} scriptSig")
+            detail = " · ".join(bits) if bits else "nothing to throw out"
+            detail += (f" · {rec.get('whole', 0):,} kept whole"
+                       f" · {rec.get('mod', 0):,} trimmed"
+                       f" · {rec.get('strip', 0):,} dropped")
+            self.say("store",
+                     f"block {rec['h']:,} — {human(thrown)} discarded "
+                     f"({pct:.2f}%)", detail,
+                     important=pct >= 20)
 
     def wallet_event(self, r):
         """This node's own transactions. Given prominence: they are yours."""
@@ -432,6 +517,78 @@ def read_state(store):
         return None, "no state.json — store not adopted by the daemon"
     except Exception as e:
         return None, f"unreadable: {e}"
+
+
+_HELP_CACHE = {"t": 0.0, "blob": None, "tried": 0.0}
+_HELP_LOCK = threading.Lock()
+
+
+def help_cache(ttl=300, fail_ttl=60):
+    """`bitcoind -help` output, cached — including when it fails.
+
+    Every settings render needs this to decide which options exist, and
+    forking bitcoind per page load would be absurd. None means the call
+    failed, which is treated as "support unknown" and blocks writes rather
+    than guessing.
+
+    THE FAILURE HAS TO BE CACHED TOO. Keying the cache on a non-None blob
+    meant a node that could not be asked got re-asked on every single render,
+    each one a subprocess with a 30-second timeout, while holding the request
+    thread. One page load with three renders in flight was enough to make the
+    dashboard look dead and the unit restart under it.
+
+    The lock matters for the same reason: without it, concurrent requests each
+    start their own bitcoind."""
+    now = time.time()
+    with _HELP_LOCK:
+        if _HELP_CACHE["blob"] is not None and now - _HELP_CACHE["t"] < ttl:
+            return _HELP_CACHE["blob"]
+        if _HELP_CACHE["blob"] is None and now - _HELP_CACHE["tried"] < fail_ttl:
+            return None
+        _HELP_CACHE["tried"] = now
+        blob = ns.help_text(timeout=10) if ns is not None else ""
+        _HELP_CACHE["t"] = now
+        _HELP_CACHE["blob"] = blob or None
+        return _HELP_CACHE["blob"]
+
+
+def read_recent(store, after=None, limit=25):
+    """Per-block carrier lines the daemon appended, newer than `after`.
+
+    Tails the end of the file rather than reading it: it is trimmed to a few
+    thousand lines but this runs every three seconds forever. A malformed line
+    is skipped, never raised — the daemon may be mid-append, and a feed is not
+    worth an exception."""
+    path = os.path.join(store or "", "recent.jsonl")
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            if size > RECENT_TAIL_BYTES:
+                f.seek(size - RECENT_TAIL_BYTES)
+                f.readline()              # discard the partial first line
+            blob = f.read().decode("utf-8", "replace")
+    except (OSError, ValueError):
+        return []
+
+    out = []
+    for line in blob.strip().split("\n"):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        h, bi, bo = rec.get("h"), rec.get("in"), rec.get("out")
+        if not all(isinstance(x, int) for x in (h, bi, bo)):
+            continue
+        if after is not None and h <= after:
+            continue
+        out.append(rec)
+    out.sort(key=lambda r: r["h"])
+    return out[-limit:]
 
 
 def store_size(store):
@@ -629,6 +786,53 @@ pre.cfg{background:#0a0d0a;border:1px solid #1e2a1e;border-left:2px solid #2fbf4
 .verdict{font-size:20px;letter-spacing:.06em}
 .bar{height:4px;background:#23252a;margin-top:8px}
 .bar>i{display:block;height:4px;background:#f7931a}
+/* the network banner — the loudest thing on the page, deliberately */
+.banner{border:2px solid;padding:18px 20px;margin:0 0 16px;text-align:center}
+.bword{font-size:40px;font-weight:700;letter-spacing:.12em;line-height:1.1}
+.bsub{font-size:12px;line-height:1.6;margin-top:10px;color:#b9b6b0}
+.banner code{background:#000;padding:1px 5px}
+.btor{border-color:#2fbf4f;background:#0b1a0d}
+.btor .bword{color:#2fbf4f}
+.bclear{border-color:#d9534f;background:#1e0d0d}
+.bclear .bword{color:#ff6b66}
+.unknown{border-color:#f0ad4e;background:#1c1609}
+.unknown .bword{color:#f0ad4e;font-size:28px}
+@media(max-width:600px){.bword{font-size:28px}}
+/* advanced settings panel */
+h3.sgroup{font-size:10px;letter-spacing:.16em;color:#f7931a;margin:20px 0 8px;
+font-weight:600;border-bottom:1px solid #23252a;padding-bottom:5px}
+.sgrid{display:block}
+.srow{display:grid;grid-template-columns:230px 150px 1fr;gap:12px;
+padding:9px 0;border-bottom:1px solid #191b1f;align-items:start}
+.srow.off{opacity:.45}
+.sname{color:#e8e6e1;font-size:12px}
+.skey{display:block;color:#6b6862;font-size:10.5px;margin-top:2px}
+.sval{display:flex;align-items:center;gap:6px}
+.unit{color:#6b6862;font-size:10.5px;white-space:nowrap}
+.shelp{color:#8b8880;font-size:11px;line-height:1.5}
+.sdef{color:#6b6862;font-size:10.5px}
+.chg{color:#f7931a;font-size:10.5px}
+input.in{background:#08090b;border:1px solid #23252a;color:#e8e6e1;
+font:12px ui-monospace,Menlo,monospace;padding:6px 8px;width:100%}
+input.in:disabled{color:#5a5752;background:#0b0c0e}
+.switch{display:inline-block;position:relative;width:42px;height:22px}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;background:#23252a;border:1px solid
+#2c2f35;transition:.15s;cursor:pointer}
+.switch span:before{content:"";position:absolute;width:16px;height:16px;
+left:2px;top:2px;background:#6b6862;transition:.15s}
+.switch input:checked+span{background:#1d3a1d;border-color:#2fbf4f}
+.switch input:checked+span:before{transform:translateX(20px);background:#2fbf4f}
+.switch input:disabled+span{opacity:.5;cursor:not-allowed}
+.sactions{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}
+button.go{background:#132013;border:1px solid #2fbf4f;color:#2fbf4f;
+font:11px ui-monospace,Menlo,monospace;letter-spacing:.14em;padding:10px 20px;
+cursor:pointer}
+button.go:hover{background:#1b2d1b}
+button.warnbtn{background:#1f1511;border-color:#f0ad4e;color:#f0ad4e}
+button.warnbtn:hover{background:#2a1c15}
+.note.good{color:#5cb85c}
+@media(max-width:700px){.srow{grid-template-columns:1fr}}
 pre.cfg{background:#08090b;border:1px solid #1c1e22;padding:10px 12px;margin:8px 0 0;font-size:11.5px;color:#b9b6b0;white-space:pre-wrap}
 #feed{background:#08090b;border:1px solid #1c1e22;height:400px;overflow:auto;font-size:11.5px;line-height:1.5}
 .ev{padding:4px 12px;border-bottom:1px solid #131519;display:flex;gap:10px}
@@ -852,10 +1056,260 @@ def settings_card(cfg, d):
              "clearnet peers. The card at the top of this page is the "
              "check.</div>")
 
+    # Read the live values rather than describing defaults: a settings card
+    # that states policy instead of state is how you end up certain a switch
+    # is off while it is on.
+    import os as _os
+    _conf = _os.path.expanduser("~/.monetary/peering.conf")
+    _serve = _onion = "0"
+    try:
+        for _l in open(_conf):
+            if _l.startswith("serve_bootstrap="):
+                _serve = _l.split("=", 1)[1].strip()
+            elif _l.startswith("peering_onion="):
+                _onion = _l.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    _on = _serve == "1"
+    p.append("<div class=note><b>Serving other monetary nodes - %s.</b><br>"
+             "Bootstrap serving is opt-in and starts off. It hands this "
+             "store to another monetary node, which verifies every block "
+             "against its own proof-of-work and checks the commitment, so "
+             "nobody has to trust you - but a full bootstrap is hundreds of "
+             "gigabytes from this laptop.<pre class=cfg>"
+             "serve_bootstrap = %s   (127.0.0.1:8335)\n"
+             "peering_onion   = %s   (reachable by other nodes over Tor)\n\n"
+             "./peering_setup.sh --settings\n"
+             "./peering_setup.sh --enable\n"
+             "sudo ./peering_setup.sh</pre>"
+             "%s<br><br>"
+             "<b>It cannot serve a stock Bitcoin node, in any state.</b> "
+             "This is the monetary sync protocol, not Bitcoin P2P, and once "
+             "this node is pruned the blocks are gone and the witness data "
+             "for modified transactions is gone permanently.</div>"
+             % ("ON" if _on else "off", esc(_serve), esc(_onion),
+                "Turning peering_onion on creates a third permanent onion "
+                "address. It reveals no IP by itself, but it cannot be "
+                "un-published."))
+
     p.append("<div class=note><b>Starting at boot</b> - "
              "<code>./services_setup.sh</code> installs systemd units for "
              "the node, the daemon and this dashboard, so all three come "
              "back after a reboot without anyone remembering to.</div>")
+
+    p.append("</div>")
+    return "".join(p)
+
+
+def race_card(store):
+    """Equal-height block races this node witnessed, and who won.
+
+    Leads with what the node did NOT do. The obvious misreading of this card
+    is that the node is picking sides, and a dashboard that invites that
+    reading about chain selection is worse than no card."""
+    if tr is None:
+        return ""
+    races = tr.load_races(store)
+    t = tr.tally(races)
+
+    p = ["<div class=card><h2>COMPETING BLOCKS</h2>"]
+    p.append("<div class=note>When two blocks arrive at the same height, this "
+             "measures how much data each carried and records which one the "
+             "network kept. <b>This node does not and cannot influence that "
+             "outcome</b> — most work wins, first seen breaks ties, no "
+             "exceptions.</div>")
+
+    if not races:
+        p.append("<div class=note>No race witnessed yet. They are rare, and "
+                 "one settled before the announcement reached this node over "
+                 "Tor is invisible here.</div></div>")
+        return "".join(p)
+
+    p.append("<table>")
+    for k, label in (("races", "races witnessed"),
+                     ("measured", "both blocks measurable"),
+                     ("unmeasured", "one side never received"),
+                     ("ties", "equal carrier load"),
+                     ("cleaner_won", "cleaner block survived"),
+                     ("dirtier_won", "dirtier block survived")):
+        p.append("<tr><td class=k>%s</td><td class=v>%s</td></tr>"
+                 % (label, commas(t[k])))
+    p.append("</table>")
+
+    if t["cleaner_won_pct"] is not None:
+        p.append("<div class=note>Of <b>%s</b> races where the two blocks "
+                 "actually differed, the cleaner one survived "
+                 "<span class=big>%.1f%%</span> of the time.</div>"
+                 % (commas(t["decided"]), t["cleaner_won_pct"]))
+    else:
+        p.append("<div class=note>No race yet where the two blocks differed "
+                 "in carrier load, so there is nothing to conclude.</div>")
+
+    p.append("<div class=note>Carrier bytes on blocks the network kept: "
+             "<b>%s</b>. On blocks it discarded: <b>%s</b>.</div>"
+             % (human(t["bytes_kept"]),
+                human(t["bytes_discarded_by_network"])))
+
+    recent = races[-5:]
+    if recent:
+        p.append("<div class=note><b>Most recent</b></div><table>")
+        for r in reversed(recent):
+            w, l = r.get("winner") or {}, r.get("loser") or {}
+            wc, lc = w.get("carriers"), l.get("carriers")
+            if wc is None or lc is None:
+                verdict, cls = "unmeasured", "dim"
+            elif wc < lc:
+                verdict, cls = "cleaner kept", "ok"
+            elif wc > lc:
+                verdict, cls = "dirtier kept", "warn"
+            else:
+                verdict, cls = "equal", "dim"
+            p.append("<tr><td class=k>%s</td><td class='v %s'>%s"
+                     " <span class=dim>(kept %s vs discarded %s)</span>"
+                     "</td></tr>"
+                     % (commas(r.get("h", 0)), cls, verdict,
+                        human(wc), human(lc)))
+        p.append("</table>")
+
+    p.append("<div class=note>One node's view of a rare event, over Tor. It "
+             "undercounts, so treat it as an observation log rather than a "
+             "survey.</div></div>")
+    return "".join(p)
+
+
+# ------------------------------------------------------- advanced settings
+
+
+def advanced_card(cfg, notice=None):
+    """The Knots-style policy panel, rendered from node_settings.SETTINGS.
+
+    Every row is generated from the catalogue, so adding a setting is a one
+    line change there and nothing here. Options the running bitcoind does not
+    have are shown disabled rather than hidden: the gap between what Core has
+    and what Knots has is the most useful thing this panel can tell you, and
+    hiding it would just make the absence look like an oversight."""
+    if ns is None:
+        return ("<div class=card><h2>ADVANCED SETTINGS</h2><div class=note>"
+                "node_settings.py is not beside this file, so the panel is "
+                "unavailable.</div></div>")
+
+    conf = getattr(cfg, "conf", "") or ""
+    mconf = getattr(cfg, "monetary_conf", "") or ""
+    blob = help_cache()
+    try:
+        rows = ns.effective(conf, blob, mconf)
+    except Exception as e:
+        return ("<div class=card><h2>ADVANCED SETTINGS</h2><div class=note>"
+                "Could not read %s: %s</div></div>"
+                % (esc(conf), esc(str(e)[:120])))
+
+    p = ["<div class=card><h2>ADVANCED SETTINGS</h2>"]
+
+    if notice:
+        cls = "bad" if notice.get("error") else "good"
+        p.append('<div class="note %s">%s</div>'
+                 % (cls, esc(notice.get("text", ""))))
+
+    p.append("<div class=note>Bitcoin settings write <code>%s</code>; "
+             "monetary-node settings write <code>%s</code>. Core reads its "
+             "configuration once at startup, so <b>nothing takes effect until "
+             "the node restarts</b> — and this page will not restart it for "
+             "you. A backup is taken before every write.</div>"
+             % (esc(conf or "no config path configured"),
+                esc(mconf or "no monetary config path configured")))
+
+    if blob is None:
+        p.append("<div class='note bad'>Could not run <code>bitcoind "
+                 "-help</code>, so this page cannot tell which options your "
+                 "build has. Nothing will be written until it can.</div>")
+
+    p.append("<form method=post action='/settings' class=setform>")
+
+    # Every setting in the catalogue works on stock Core, so an unsupported
+    # row means a build older than expected. Hide it rather than showing a
+    # control that does nothing — but say how many vanished, because a
+    # silently shorter page is its own kind of lie.
+    hidden = [r for r in rows if r["supported"] is False]
+    rows = [r for r in rows if r["supported"] is not False]
+
+    changed = [r for r in rows if not r["at_default"]]
+    p.append("<div class=note>%d of %d settings differ from their defaults."
+             "</div>" % (len(changed), len(rows)))
+    if hidden:
+        p.append("<div class=note>%d setting%s hidden: this build of Bitcoin "
+                 "Core does not have %s. Everything offered here works on "
+                 "stock Core, so that suggests an older version than "
+                 "expected.</div>"
+                 % (len(hidden), "" if len(hidden) == 1 else "s",
+                    ", ".join(esc(r["key"]) for r in hidden)))
+
+    group = None
+    for r in rows:
+        if r["group"] != group:
+            if group is not None:
+                p.append("</div>")
+            group = r["group"]
+            p.append("<h3 class=sgroup>%s</h3><div class=sgrid>"
+                     % esc(group))
+
+        # Unsupported rows were filtered out above, so the only reason to
+        # disable a control now is that we could not ask bitcoind at all —
+        # in which case nothing is writable and the banner says so.
+        avail = blob is not None
+        dis = "" if avail else " disabled"
+        name = esc(r["key"])
+        val = esc(r["value"])
+
+        p.append("<div class='srow%s'>" % ("" if avail else " off"))
+        p.append("<div class=sname><label for='f_%s'>%s</label>"
+                 "<span class=skey>%s</span></div>" % (name, esc(r["label"]),
+                                                       name))
+
+        if r["type"] == ns.BOOL:
+            on = str(r["value"]) in ("1", "true", "True", "on", "yes")
+            # A checkbox that is off sends nothing, so an explicit hidden
+            # partner is what makes "turn this off" reach the server.
+            p.append("<input type=hidden name='has_%s' value=1>" % name)
+            p.append("<label class=switch><input type=checkbox id='f_%s' "
+                     "name='%s' value=1%s%s><span></span></label>"
+                     % (name, name, " checked" if on else "", dis))
+        else:
+            p.append("<div class=sval><input class=in id='f_%s' name='%s' "
+                     "value='%s' maxlength=16%s>%s</div>"
+                     % (name, name, val, dis,
+                        ("<span class=unit>%s</span>" % esc(r["unit"]))
+                        if r["unit"] else ""))
+
+        p.append("<div class=shelp>%s" % esc(r["help"]))
+        if r["warn"]:
+            p.append("<br><span class=warn>%s</span>" % esc(r["warn"]))
+        p.append("<br><span class=sdef>default: %s%s</span>"
+                 % (esc(r["default"]) if r["default"] != "" else "unset",
+                    (" " + esc(r["unit"])) if r["unit"] else ""))
+        if r.get("scope") == ns.SCOPE_MONETARY:
+            p.append("<br><span class=sdef>monetary node option — bitcoind "
+                     "never sees this</span>")
+        elif not r["at_default"]:
+            p.append("<br><span class=chg>changed from default</span>")
+        p.append("</div></div>")
+
+    if group is not None:
+        p.append("</div>")
+
+    p.append("<div class=sactions>"
+             "<button class=go type=submit name=action value=save>"
+             "SAVE CHANGES</button>"
+             "<button class='go warnbtn' type=submit name=action "
+             "value=defaults onclick=\"return confirm('Put every setting "
+             "back to its default? Your own config lines are kept.')\">"
+             "RESTORE DEFAULTS</button>"
+             "</div>")
+    p.append("</form>")
+
+    p.append("<div class=note>After saving: <code>sudo systemctl restart "
+             "bitcoind</code>, then re-run <code>./tor_lockdown.sh --verify"
+             "</code>. A config change is exactly when a Tor assumption "
+             "quietly stops being true.</div>")
 
     p.append("</div>")
     return "".join(p)
@@ -880,6 +1334,69 @@ def donate_footer(addr=None):
         "</div>" % (a, a))
 
 
+def network_banner(d):
+    """The first thing on the page, in the largest type on it.
+
+    Reports what the node is DOING, not what a config file asks for. Those
+    diverged once on this node — six hours of clearnet peers behind a
+    bitcoin.conf that said onlynet=onion, because the running process had
+    never read it — and a banner that reported intent would have shown TOR
+    ONLY in green throughout.
+
+    So: proxy present, onion reachable, ipv4 and ipv6 NOT reachable, and zero
+    non-onion peers right now. Anything less is not Tor only, and says so."""
+    net, peers = d.get("netinfo"), d.get("peers") or []
+    if net is None:
+        return ("<div class='banner unknown'><div class=bword>NETWORK "
+                "UNKNOWN</div><div class=bsub>The node is not answering, so "
+                "this page cannot tell you how it is connected. Assume "
+                "nothing until it does.</div></div>")
+
+    reach, proxy = {}, ""
+    for e in net.get("networks", []):
+        reach[e.get("name")] = e.get("reachable")
+        if e.get("name") == "onion" and e.get("proxy"):
+            proxy = e["proxy"]
+    nets = collections.Counter(p.get("network") or "?" for p in peers)
+    clear = sum(v for k, v in nets.items() if k not in ("onion", "i2p"))
+
+    tor_only = (bool(proxy) and reach.get("onion")
+                and not reach.get("ipv4") and not reach.get("ipv6")
+                and clear == 0)
+
+    if tor_only:
+        return ("<div class='banner btor'>"
+                "<div class=bword>TOR ONLY</div>"
+                "<div class=bsub>%d peers, every one over Tor. No clearnet "
+                "route in or out, enforced by the kernel rather than "
+                "requested in a config file.<br>"
+                "To change this: <code>sudo ./tor_lockdown.sh --clearnet"
+                "</code> on the node. It will make you type the word."
+                "</div></div>" % len(peers))
+
+    why = []
+    if not proxy:
+        why.append("no Tor proxy configured")
+    if not reach.get("onion"):
+        why.append("onion not reachable")
+    if reach.get("ipv4"):
+        why.append("IPv4 reachable")
+    if reach.get("ipv6"):
+        why.append("IPv6 reachable")
+    if clear:
+        why.append("%d clearnet peer%s connected right now"
+                   % (clear, "" if clear == 1 else "s"))
+
+    return ("<div class='banner bclear'>"
+            "<div class=bword>CLEARNET</div>"
+            "<div class=bsub>%s.<br><b>Your home IP address is visible to "
+            "every peer you connect to, and to anyone watching them.</b> If "
+            "that is not what you intended, stop the node now:<br>"
+            "<code>sudo systemctl stop bitcoind</code> then "
+            "<code>sudo ./tor_lockdown.sh</code>"
+            "</div></div>" % esc("; ".join(why).capitalize()))
+
+
 def render(d, cfg=None):
     n, s, b = d["node"], d["state"], d["build"]
     p = []
@@ -889,6 +1406,10 @@ def render(d, cfg=None):
       f"<style>{CSS}</style><div class=wrap><h1>MONETARY NODE</h1>"
       f"<div class=sub><span class=live id=live></span>live feed · cards"
       f" refresh on reload · read only</div>")
+
+    # Above the errors, above everything. This is the one fact on the page
+    # that is worth more than the rest of it combined.
+    A(network_banner(d))
 
     for e in d["errors"]:
         A(f"<div class='card err'><h2>PROBLEM</h2><div class=bad>{esc(e)}</div></div>")
@@ -991,12 +1512,15 @@ def render(d, cfg=None):
         A("</table></div>")
 
     if cfg is not None:
+        A(race_card(getattr(cfg, "store", "")))
         A(settings_card(cfg, d))
+        A(advanced_card(cfg, notice=d.get("settings_notice")))
 
     A("<div class=card><h2>NOT AVAILABLE HERE</h2><div class=note>"
-      "No shell, no controls. This page cannot start, stop, convert or prune"
-      " anything. A terminal over HTTP would be remote code execution on your"
-      " node behind a page with no authentication; pruning is irreversible."
+      "No shell. This page edits <code>bitcoin.conf</code> and nothing else: "
+      "it cannot start, stop, restart, convert or prune anything. A terminal "
+      "over HTTP would be remote code execution on your node behind a page "
+      "with no authentication, and pruning is irreversible."
       "</div></div>")
 
     A("</div>")
@@ -1050,10 +1574,152 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             self._send(404, "not found", "text/plain")
 
+    # ------------------------------------------------------------ settings
+    #
+    # The only write path in this program. It exists because a settings page
+    # you cannot save is not a settings page, and because Umbrel's standard is
+    # that an app is operable from the browser without touching a shell.
+    #
+    # Everything that makes it safe lives in node_settings.py: each key is
+    # checked against `bitcoind -help`, each value against its declared type
+    # and range, the whole batch is rejected if any part of it is bad, and the
+    # file is backed up and replaced atomically. Nothing here validates
+    # anything itself, so there is one place to audit rather than two.
+
     def do_POST(self):
+        parts = urllib.parse.urlparse(self.path)
+        if parts.path != "/settings":
+            self._send(404, "not found", "text/plain")
+            return
+        if ns is None:
+            self._settings_result(True, "node_settings.py is not available.")
+            return
+
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        # A settings form is a few hundred bytes. Anything larger is not one.
+        if length <= 0 or length > 65536:
+            self._settings_result(True, "Malformed request.")
+            return
+        try:
+            body = self.rfile.read(length).decode("utf-8", "replace")
+            form = urllib.parse.parse_qs(body, keep_blank_values=True,
+                                         max_num_fields=200)
+        except (OSError, ValueError):
+            self._settings_result(True, "Malformed request.")
+            return
+
+        conf = getattr(self.cfg, "conf", "") or ""
+        mconf = getattr(self.cfg, "monetary_conf", "") or ""
+        if not conf:
+            self._settings_result(True, "No config path was configured, so "
+                                        "there is nothing to write to.")
+            return
+        paths = {ns.SCOPE_BITCOIND: conf, ns.SCOPE_MONETARY: mconf}
+        blob = help_cache()
+        if blob is None:
+            self._settings_result(True, "Cannot run `bitcoind -help`, so this "
+                                        "page will not guess which options "
+                                        "your build supports. Nothing was "
+                                        "written.")
+            return
+
+        action = (form.get("action") or [""])[0]
+
+        if action == "defaults":
+            try:
+                written, baks = ns.restore_all_defaults(paths, blob)
+            except Exception as e:
+                self._settings_result(True, "Nothing written: %s"
+                                      % str(e)[:200])
+                return
+            self._settings_result(
+                False, "%d settings restored to defaults%s. Restart bitcoind "
+                       "to apply."
+                % (len(written),
+                   (" (backups: %s)"
+                    % ", ".join(os.path.basename(b)
+                                for b in baks.values())) if baks else ""))
+            return
+
+        if action != "save":
+            self._settings_result(True, "Unknown action.")
+            return
+
+        # Checkboxes send nothing when off, so the hidden has_<key> partner is
+        # what distinguishes "turned off" from "not on this form at all".
+        changes = {}
+        for key in ns.BY_KEY:
+            s = ns.BY_KEY[key]
+            if s["type"] == ns.BOOL:
+                if ("has_" + key) not in form:
+                    continue
+                changes[key] = "1" if key in form else "0"
+            elif key in form:
+                v = (form.get(key) or [""])[0].strip()
+                if v == "":
+                    continue
+                changes[key] = v
+
+        # Only send what actually differs, so a save does not rewrite the
+        # whole file and bury the real change in a diff of forty lines.
+        try:
+            current = {r["key"]: str(r["value"])
+                       for r in ns.effective(conf, blob, mconf)}
+        except Exception:
+            current = {}
+        diff = {}
+        for k, v in changes.items():
+            norm, why = ns.validate(k, v)
+            if why:
+                diff[k] = v          # let node_settings report the reason
+            elif norm != current.get(k):
+                diff[k] = norm
+
+        if not diff:
+            self._settings_result(False, "No changes.")
+            return
+        try:
+            written, baks = ns.write_settings(paths, diff, blob)
+        except ValueError as e:
+            self._settings_result(True, "Nothing written — %s" % str(e)[:300])
+            return
+        except Exception:
+            self._settings_result(True, "Nothing written: the config could "
+                                        "not be updated.")
+            return
+
+        self._settings_result(
+            False, "Saved %s%s. Restart bitcoind to apply, then re-run "
+                   "tor_lockdown.sh --verify."
+            % (", ".join("%s=%s" % (k, v) for k, v in sorted(written.items())),
+               (" (backups: %s)"
+                % ", ".join(os.path.basename(b)
+                            for b in baks.values())) if baks else ""))
+
+    def _settings_result(self, is_error, text):
+        """Render the page again with a notice. No redirect, no flash cookie.
+
+        A redirect would need the notice stored somewhere between requests,
+        and the only place to put it is server state shared by every visitor —
+        which for a page with no authentication is worse than a re-render."""
+        try:
+            self.cfg._selected_log = None
+            self.cfg._indexer = self.poller.indexer if self.poller else None
+            d = gather(self.cfg)
+            d["settings_notice"] = {"error": is_error, "text": text}
+            self._send(200, render(d, self.cfg), "text/html; charset=utf-8")
+        except Exception:
+            self._send(500, "settings error", "text/plain")
+
+    # POST is handled above, and only for /settings. Everything else that
+    # mutates stays refused: this page edits bitcoin.conf and nothing else.
+    def _read_only(self):
         self._send(405, "this interface is read only", "text/plain")
 
-    do_PUT = do_DELETE = do_PATCH = do_POST
+    do_PUT = do_DELETE = do_PATCH = _read_only
 
     def log_message(self, *a):
         pass
@@ -1215,10 +1881,354 @@ def selftest():
     ck("page contacts nothing for it",
        "http://" not in f and "https://" not in f and "<img" not in f)
 
+    ck("settings card shows peering state",
+       "serve_bootstrap" in settings_card(_C(), {})
+       and "peering_onion" in settings_card(_C(), {}))
+    ck("peering described as opt-in and off by default",
+       "opt-in" in settings_card(_C(), {}).lower())
+    ck("says it cannot serve a stock node",
+       "stock Bitcoin node" in settings_card(_C(), {}))
+
+    # ------------------------------------------------------- network banner
+    print("\nnetwork banner")
+
+    def nets(onion=True, ipv4=False, ipv6=False, proxy="127.0.0.1:9050"):
+        out = [{"name": "onion", "reachable": onion, "proxy": proxy},
+               {"name": "ipv4", "reachable": ipv4},
+               {"name": "ipv6", "reachable": ipv6}]
+        return {"networks": out}
+
+    clean = {"netinfo": nets(), "peers": [{"network": "onion"}] * 11}
+    bn = network_banner(clean)
+    ck("says TOR ONLY when it is", "TOR ONLY" in bn and "CLEARNET" not in bn)
+    ck("the verdict is the biggest text on the page", "bword" in bn)
+    ck("it names the peer count it checked", "11 peers" in bn)
+    ck("it says the lockdown is kernel-enforced, not requested",
+       "enforced by the kernel" in bn)
+    ck("it gives the command to change it", "--clearnet" in bn)
+
+    # THE CASE THAT ACTUALLY HAPPENED. bitcoin.conf said onlynet=onion; the
+    # running process had never read it; 42 clearnet peers. A banner built on
+    # configured intent would have been green for six hours.
+    lying = {"netinfo": nets(ipv4=True),
+             "peers": [{"network": "ipv4"}] * 42}
+    bl = network_banner(lying)
+    ck("a node with clearnet peers is never TOR ONLY", "TOR ONLY" not in bl)
+    ck("it says CLEARNET instead", "CLEARNET" in bl)
+    ck("it counts the clearnet peers", "42 clearnet peers" in bl)
+    ck("it warns the home IP is exposed", "home IP address is visible" in bl)
+    ck("it gives the command to stop the node", "systemctl stop bitcoind" in bl)
+
+    ck("one clearnet peer is enough to fail it",
+       "TOR ONLY" not in network_banner(
+           {"netinfo": nets(), "peers": [{"network": "onion"},
+                                         {"network": "ipv4"}]}))
+    ck("ipv4 reachable fails it even with zero clearnet peers",
+       "TOR ONLY" not in network_banner(
+           {"netinfo": nets(ipv4=True), "peers": [{"network": "onion"}]}))
+    ck("ipv6 reachable fails it too",
+       "TOR ONLY" not in network_banner(
+           {"netinfo": nets(ipv6=True), "peers": [{"network": "onion"}]}))
+    ck("a missing proxy fails it",
+       "TOR ONLY" not in network_banner(
+           {"netinfo": nets(proxy=""), "peers": [{"network": "onion"}]}))
+    ck("onion unreachable fails it",
+       "TOR ONLY" not in network_banner(
+           {"netinfo": nets(onion=False), "peers": [{"network": "onion"}]}))
+    ck("a node with no peers yet can still be TOR ONLY",
+       "TOR ONLY" in network_banner({"netinfo": nets(), "peers": []}))
+
+    bu = network_banner({"netinfo": None, "peers": []})
+    ck("an unreachable node says UNKNOWN, not TOR ONLY",
+       "UNKNOWN" in bu and "TOR ONLY" not in bu)
+    ck("and tells you to assume nothing", "Assume" in bu)
+
+    # Reuse the gather() fixture's own peers: other cards read fields the
+    # banner never touches, and a hand-made peer dict breaks them.
+    full = render(dict(g, netinfo=nets()), _C())
+    ck("the banner is the first card in the page",
+       full.index("banner") < full.index("FEED"))
+    ck("banner escapes hostile network names",
+       "<script>" not in network_banner(
+           {"netinfo": {"networks": [{"name": "<script>x</script>",
+                                      "reachable": True}]},
+            "peers": [{"network": "<script>y</script>"}]}))
+
     ck("feed js uses textContent", "textContent" in FEED_JS
        and "innerHTML" not in FEED_JS)
     ck("heartbeat interval sane", 1 <= HEARTBEAT_EVERY <= 20)
-    ck("quip odds in 1-2% range", 50 <= QUIP_ODDS <= 100)
+    ck("quips appear in 1% of feed lines", QUIP_ODDS == 100)
+
+    # ------------------------------------------------------- garbage feed
+    print("\nper-block carrier feed")
+    import tempfile as _tf
+    sd = _tf.mkdtemp()
+    with open(os.path.join(sd, "recent.jsonl"), "w") as f:
+        for h in (968578, 968579, 968580):
+            f.write(json.dumps({"h": h, "t": 1700000000, "in": 1900000,
+                                "out": 1740000, "env": 150000, "opr": 6000,
+                                "ms": 3000, "ss": 1000, "whole": 2800,
+                                "mod": 40, "strip": 9, "txs": 2849}) + "\n")
+        f.write("{ this line is not json\n")
+        f.write("\n")
+
+    recs = read_recent(sd)
+    ck("reads the per-block log", len(recs) == 3)
+    ck("skips a malformed line instead of raising",
+       all(isinstance(r["h"], int) for r in recs))
+    ck("returns blocks in height order",
+       [r["h"] for r in recs] == [968578, 968579, 968580])
+    ck("after= filters to new blocks only",
+       [r["h"] for r in read_recent(sd, after=968578)] == [968579, 968580])
+    ck("nothing new returns empty", read_recent(sd, after=968580) == [])
+    ck("a missing store is empty, not an error",
+       read_recent(os.path.join(sd, "nope")) == [])
+    ck("a store of None is empty, not an error", read_recent(None) == [])
+
+    # A truncated tail must not produce a half-parsed record.
+    big = os.path.join(sd, "big")
+    os.makedirs(big, exist_ok=True)
+    with open(os.path.join(big, "recent.jsonl"), "w") as f:
+        for h in range(900000, 903000):
+            f.write(json.dumps({"h": h, "t": 1, "in": 100, "out": 90}) + "\n")
+    tailed = read_recent(big, limit=25)
+    ck("a long log is tailed, not read whole", len(tailed) == 25)
+    ck("the tail ends at the newest block", tailed[-1]["h"] == 902999)
+
+    class _P:
+        cfg = _C()
+        say_log = []
+
+        def say(self, kind, text, detail=None, important=False):
+            self._log.append((kind, text, detail))
+    pp = Poller.__new__(Poller)
+    pp.cfg = type("c", (), {"store": sd})()
+    pp.recent_seen = 968578
+    pp._log = []
+    pp.feed = Feed()
+    pp.say = lambda k, t, d=None, important=False: pp._log.append((k, t, d))
+    pp.garbage_events()
+    ck("emits one feed line per new block", len(pp._log) == 2)
+    ck("the line leads with what was discarded",
+       "discarded" in pp._log[0][1] and "968,579" in pp._log[0][1])
+    ck("the line reports a percentage", "%" in pp._log[0][1])
+    ck("the detail breaks the carriers down by kind",
+       "envelopes" in pp._log[0][2] and "OP_RETURN" in pp._log[0][2]
+       and "bare multisig" in pp._log[0][2])
+    ck("the detail reports kept, trimmed and dropped counts",
+       "kept whole" in pp._log[0][2] and "trimmed" in pp._log[0][2]
+       and "dropped" in pp._log[0][2])
+    pp.garbage_events()
+    ck("a block is never reported twice", len(pp._log) == 2)
+
+    # ---------------------------------------------------- settings panel
+    print("\nadvanced settings panel")
+    if ns is None:
+        ck("node_settings is importable", False, "module not found")
+    else:
+        conf_path = os.path.join(sd, "bitcoin.conf")
+        with open(conf_path, "w") as f:
+            f.write("dbcache=900\nonlynet=onion\n")
+
+        mconf_path = os.path.join(sd, "monetary", "monetary.conf")
+        os.makedirs(os.path.dirname(mconf_path), exist_ok=True)
+        with open(mconf_path, "w") as f:
+            f.write("racewindow=45\n")
+
+        # A class body cannot see the enclosing function's locals, so the
+        # attribute has to be assigned from a differently named variable.
+        class _CS:
+            store = sd
+            conf = conf_path
+            monetary_conf = mconf_path
+            rpc_url = "http://127.0.0.1:8332"
+            cookie = ""
+            log_dir = ""
+            build_log = ""
+            host = "127.0.0.1"
+            port = 8080
+            electrum_ssl = False
+
+        # Build the fake `bitcoind -help` from the catalogue itself, so this
+        # stays true as settings come and go. Value options carry "=<n>",
+        # booleans do not — the distinction supported() depends on.
+        _HELP_CACHE["t"] = time.time()
+        _HELP_CACHE["blob"] = "\n".join(
+            "  -%s%s" % (s["key"], "" if s["type"] == ns.BOOL else "=<n>")
+            for s in ns.SETTINGS if s["scope"] == ns.SCOPE_BITCOIND)
+        card = advanced_card(_CS())
+
+        ck("panel renders every catalogue setting",
+           all(("name='%s'" % s["key"]) in card for s in ns.SETTINGS),
+           [s["key"] for s in ns.SETTINGS
+            if ("name='%s'" % s["key"]) not in card])
+        ck("panel groups the settings",
+           all(("<h3 class=sgroup>%s" % g) in card for g in ns.GROUPS))
+        ck("panel has a save button", "value=save" in card)
+        ck("panel has a restore-to-defaults button", "value=defaults" in card)
+        ck("restore asks for confirmation first", "confirm(" in card)
+        ck("panel says a restart is required",
+           "until the node restarts" in card)
+        ck("panel shows the current value, not the default",
+           "value='900'" in card)
+        ck("panel marks settings that differ from default", "chg" in card)
+        ck("panel distinguishes monetary options from bitcoind ones",
+           "bitcoind never sees this" in card)
+        ck("panel names both config files it writes",
+           conf_path in card and mconf_path in card)
+
+        # He asked for no dead controls. Every row must be operable.
+        # Checked as an HTML attribute, not a substring: the word appears
+        # legitimately in prose like "Disable Core's Own Wallet", and a test
+        # that trips on help text is a test you learn to weaken.
+        ck("no control is disabled when bitcoind answered",
+           not re.search(r"<(input|button|select)[^>]*\sdisabled", card))
+        ck("nothing says an option is missing from the build",
+           "Not in this build" not in card)
+        ck("the Lightning group is present and prominent",
+           "zmqpubrawblock" in card and "LND requires" in card)
+        ck("blocksonly warns it breaks Lightning", "Lightning breaks" in card)
+        ck("the router group explains the IP pairing risk",
+           "home IP" in card)
+        ck("no pruning control exists", "name='prune'" not in card)
+        ck("no mining-template control exists",
+           "blockmaxweight" not in card and "blockmintxfee" not in card)
+
+        # An option genuinely absent from an older Core is hidden, not
+        # greyed — but the page says how many vanished and which.
+        _HELP_CACHE["blob"] = "\n".join(
+            "  -%s%s" % (s["key"], "" if s["type"] == ns.BOOL else "=<n>")
+            for s in ns.SETTINGS
+            if s["scope"] == ns.SCOPE_BITCOIND
+            and s["key"] != "coinstatsindex")
+        older = advanced_card(_CS())
+        ck("an unsupported option is hidden, not disabled",
+           "name='coinstatsindex'" not in older
+           and not re.search(r"<(input|button|select)[^>]*\sdisabled", older))
+        ck("but the page says one was hidden and names it",
+           "1 setting hidden" in older and "coinstatsindex" in older)
+        ck("and explains that everything offered works on stock Core",
+           "works on stock Core" in older)
+        ck("panel reminds you to re-verify Tor after a change",
+           "tor_lockdown.sh --verify" in card)
+        ck("booleans carry a hidden partner so 'off' is sendable",
+           "has_txindex" in card)
+
+        # Hostile catalogue content must not escape into the page.
+        ns.SETTINGS.append(dict(group="<script>x</script>", key="zzhostile",
+                                type=ns.BOOL, default=0,
+                                label="<img src=x onerror=1>",
+                                help="<b>bold</b>", warn="<script>y</script>"))
+        ns.BY_KEY["zzhostile"] = ns.SETTINGS[-1]
+        ns.GROUPS.append("<script>x</script>")
+        try:
+            hostile_card = advanced_card(_CS())
+            ck("panel escapes hostile catalogue text",
+               "<script>" not in hostile_card
+               and "<img src=x" not in hostile_card)
+        finally:
+            ns.SETTINGS.pop()
+            ns.BY_KEY.pop("zzhostile")
+            ns.GROUPS.pop()
+
+        _HELP_CACHE["blob"] = None
+        _HELP_CACHE["t"] = 0
+        _HELP_CACHE["tried"] = time.time()
+        blind = advanced_card(_CS())
+        ck("with no bitcoind help, the panel refuses to guess",
+           "cannot tell which options" in blind)
+
+        # A failed probe must be remembered, or every render forks bitcoind
+        # again with a long timeout and the dashboard stalls itself to death.
+        calls = []
+        _real = ns.help_text
+        ns.help_text = lambda *a, **k: (calls.append(1), "")[1]
+        try:
+            _HELP_CACHE["blob"] = None
+            _HELP_CACHE["tried"] = 0.0
+            help_cache()
+            help_cache()
+            help_cache()
+            ck("a failed bitcoind probe is only retried once per window",
+               len(calls) == 1, "%d calls" % len(calls))
+            _HELP_CACHE["tried"] = 0.0
+            help_cache()
+            ck("the failure window does expire", len(calls) == 2)
+            ck("the dashboard asks for a short timeout, not 30s",
+               "timeout" in _real.__code__.co_varnames)
+        finally:
+            ns.help_text = _real
+            _HELP_CACHE["blob"] = None
+            _HELP_CACHE["tried"] = time.time()
+
+        notice = advanced_card(_CS(), notice={"error": True,
+                                              "text": "Nothing written"})
+        ck("an error notice renders", "Nothing written" in notice)
+
+        missing = advanced_card(type("c", (), {"conf": ""})())
+        ck("a missing config path does not crash the panel",
+           "ADVANCED SETTINGS" in missing)
+
+    # ------------------------------------------------------ competing blocks
+    print("\ncompeting blocks card")
+    if tr is None:
+        ck("tip_race is importable", False, "module not found")
+    else:
+        empty = race_card(os.path.join(sd, "noraces"))
+        ck("with no races it says so plainly",
+           "No race witnessed yet" in empty)
+        ck("even empty, it states it cannot influence the outcome",
+           "cannot influence" in empty)
+
+        rd = _tf.mkdtemp()
+        with open(os.path.join(rd, "races.jsonl"), "w") as f:
+            # cleaner won, dirtier won, a tie, and an unmeasured side
+            for h, wc, lc in ((900001, 10, 500000), (900002, 400000, 20),
+                              (900003, 100, 100)):
+                f.write(json.dumps({"h": h, "t": 1,
+                                    "winner": {"hash": "a" * 64,
+                                               "carriers": wc},
+                                    "loser": {"hash": "b" * 64,
+                                              "carriers": lc}}) + "\n")
+            f.write(json.dumps({"h": 900004, "t": 1,
+                                "winner": {"hash": "c" * 64,
+                                           "carriers": None},
+                                "loser": {"hash": "d" * 64,
+                                          "carriers": 5}}) + "\n")
+        card = race_card(rd)
+        ck("counts the races", "races witnessed" in card)
+        ck("reports cleaner and dirtier wins separately",
+           "cleaner block survived" in card
+           and "dirtier block survived" in card)
+        ck("a tie is not counted as a win",
+           ">1<" in card.replace(" ", ""))
+        ck("the headline percentage excludes ties and unmeasured",
+           "50.0%" in card)
+        ck("lists the most recent races",
+           "cleaner kept" in card and "dirtier kept" in card)
+        ck("says it undercounts rather than claiming a survey",
+           "undercounts" in card)
+        ck("names most-work and first-seen as the actual rule",
+           "most work" in card and "first seen" in card)
+
+        # The feed must never imply the node took a side.
+        pr = Poller.__new__(Poller)
+        pr.cfg = type("c", (), {"store": rd})()
+        pr.race_seen = 900001
+        pr._log = []
+        pr.feed = Feed()
+        pr.say = lambda k, t, d=None, important=False: pr._log.append((k, t, d))
+        pr.race_event()
+        ck("emits a feed line per new race", len(pr._log) == 3)
+        ck("the race line names the height",
+           "900,002" in pr._log[0][1])
+        ck("the race line says who survived, not who it preferred",
+           "survived" in pr._log[0][2]
+           and "prefer" not in " ".join(x[2] or "" for x in pr._log))
+        ck("an unmeasured race says so instead of guessing",
+           "never arrived" in pr._log[-1][2])
+        pr.race_event()
+        ck("a race is never reported twice", len(pr._log) == 3)
 
     print(f"\n{sum(ok)}/{len(ok)} passed")
     return 0 if all(ok) else 1
@@ -1233,6 +2243,13 @@ def main():
     ap.add_argument("--store", default=os.path.expanduser("~/mstore"))
     ap.add_argument("--datadir", default=os.path.expanduser("~/.bitcoin"))
     ap.add_argument("--cookie")
+    ap.add_argument("--conf", default=None,
+                    help="bitcoin.conf the advanced settings panel edits; "
+                         "defaults to bitcoin.conf inside --datadir")
+    ap.add_argument("--monetary-conf",
+                    default=os.path.expanduser("~/.monetary/monetary.conf"),
+                    help="where monetary-node settings are written; never "
+                         "mixed into bitcoin.conf")
     ap.add_argument("--rpc-url", default="http://127.0.0.1:8332")
     ap.add_argument("--build-log",
                     default=os.path.expanduser("~/monetary-node/results/build.log"))
@@ -1254,6 +2271,8 @@ def main():
 
     if a.cookie is None:
         a.cookie = os.path.join(a.datadir, ".cookie")
+    if a.conf is None:
+        a.conf = os.path.join(a.datadir, "bitcoin.conf")
     a._selected_log = None
     a._indexer = None
 
@@ -1271,6 +2290,7 @@ def main():
     with Server((a.host, a.port), Handler) as srv:
         print(f"monetary node UI on http://{a.host}:{a.port}   (read only)")
         print(f"  store      {a.store}")
+        print(f"  config     {a.conf}   (the settings panel writes this)")
         print(f"  node RPC   {a.rpc_url}")
         print(f"  logs       {a.log_dir}")
         print(f"  indexer    {a.electrum or 'none — see the INDEXER card'}")

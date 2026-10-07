@@ -178,7 +178,13 @@ Requires=tor.service
 
 [Service]
 ExecStart=$(command -v bitcoind) -daemonwait -conf=$CONF -datadir=$DATADIR
-Type=simple
+# -daemonwait forks once initialisation finishes, so the process systemd
+# launched exits and a Type=simple unit is declared dead the moment the node
+# is actually ready. Type=forking is the matching contract, and it also makes
+# After=bitcoind.service mean "RPC is up" rather than "the binary was
+# launched" — which is what the store daemon ordering depends on.
+Type=forking
+PIDFile=$DATADIR/bitcoind.pid
 User=$USERNAME
 Restart=on-failure
 TimeoutStartSec=infinity

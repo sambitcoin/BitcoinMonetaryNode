@@ -1,0 +1,63 @@
+# The monetary store itself. Hundreds of gigabytes of derived block records.
+# Nobody should fetch this from a git remote: the whole point is that you
+# re-derive it from your own node and compare the commitment.
+store/
+mstore/
+*.dat
+*.jsonl
+
+# The offset and block indexes. Rebuilt on demand, large, machine-specific.
+.txq_offsets
+txq_*.idx
+*.idx
+electrs-db/
+
+# NOT ignored: results/
+#
+# The README calls results/ "the evidence behind every number on this page",
+# and says that if a figure disagrees with a log, the log is right. Ignoring
+# it would quietly remove the project's own evidence from the repository.
+# Logs are small text files; they belong in git.
+#
+# Service logs are a different thing — machine-specific, noisy, and they
+# carry paths and peer counts nobody else needs.
+monetary-ui.log
+monetary-daemon.log
+debug.log
+
+# State. Carries this node's height, hash and commitment — reproducible by
+# anyone running the tools, and misleading if shipped as though it were
+# canonical.
+state.json
+recent.jsonl
+races.jsonl
+
+# Config. bitcoin.conf and monetary.conf hold paths, ports and a user agent
+# specific to one machine; the backups hold earlier versions of the same.
+bitcoin.conf
+monetary.conf
+*.bak.*
+*.removed.*
+.monetary/
+.electrs/
+
+# Anything resembling a credential. There should be none in this tree, and a
+# pattern here is cheaper than noticing one in a published commit.
+.cookie
+*.pem
+*.key
+hostname
+onion_*
+
+# Python and editor noise.
+__pycache__/
+*.py[cod]
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Build trees from patch_build.sh. Core's source is not this project's to
+# redistribute, and it is gigabytes.
+core-patched/
+build/

@@ -1,0 +1,134 @@
+
+======================================================================
+MONETARY NODE — RELEASE CHECK
+======================================================================
+2026-10-07 16:35:25Z
+root   /Users/neal/src/bmn
+python 3.9.6
+uname  Darwin arm64
+
+======================================================================
+FILES
+======================================================================
+  [ok     ] tools/mindex.py                     11157 bytes
+  [ok     ] tools/monetary_store.py             32588 bytes
+  [ok     ] tools/test_monetary_store.py        13575 bytes
+  [ok     ] tools/monetary_commit.py             8497 bytes
+  [ok     ] tools/spend_check.py                25302 bytes
+  [ok     ] tools/wallet_check.py               24372 bytes
+  [ok     ] tools/chainstate_filter.py          23661 bytes
+  [ok     ] tools/commit_scan.py                18693 bytes
+  [ok     ] tools/monetary_ibd.py               35816 bytes
+  [ok     ] tools/monetary_daemon.py            24435 bytes
+  [ok     ] tools/monetary_convert.py           19302 bytes
+  [ok     ] tools/prune_behind.py                6480 bytes
+  [ok     ] tools/chain_check.py                11818 bytes
+  [ok     ] tools/flag_count.py                  9285 bytes
+  [ok     ] tools/monetary_ui.py               100675 bytes
+  [ok     ] tools/quips.py                       9193 bytes
+  [ok     ] tools/carrier_policy.py             28353 bytes
+  [ok     ] tools/sbtc_scan.py                  14892 bytes
+  [ok     ] tools/node_settings.py              49526 bytes
+  [ok     ] tools/tip_race.py                   24117 bytes
+  [ok     ] tools/tx_query.py                   25788 bytes
+  [ok     ] tools/status_page.py                39825 bytes
+
+======================================================================
+SELF-TESTS
+======================================================================
+  test_monetary_store.py       passed
+  spend_check.py               21/21 passed
+  wallet_check.py              11/11 passed
+  monetary_commit.py           passed
+  monetary_ibd.py              24/24 passed
+  monetary_ibd.py              14/14 passed
+  monetary_daemon.py           19/19 passed
+  chainstate_filter.py         23/23 passed
+  commit_scan.py               13/13 passed
+  chain_check.py               14/14 passed
+  flag_count.py                15/15 passed
+  monetary_ui.py               120/120 passed
+  carrier_policy.py            53/53 passed
+  sbtc_scan.py                 17/17 passed
+  node_settings.py             106/106 passed
+  tip_race.py                  36/36 passed
+  tx_query.py                  31/31 passed
+  status_page.py               55/55 passed
+  quips.py                     12/12 passed
+
+======================================================================
+MANIFEST
+======================================================================
+Hash of every tracked file. Paste this beside a release so anyone can
+check they are running what you tested.
+
+  43686108abdd17ae9aa8c2c0d0586ea7088a29bd2ad8b6d7cf6fdd322f18569a  ./archive/init.py
+  b6f766358c1d02b9d8dbd7c218081233f48d428a52057e582b5dc3e16eb3589e  ./archive/inscription_scan.py
+  c79706947cde92a78bb002bcfac597dad31d5a32e563602a51adab1b8d3a62b0  ./archive/LICENSE
+  ea8c0f7a0fb6bd517d2d66c1e89df8fa8625de9d5834a60ee38de7648b8580a9  ./archive/spam_strip.py
+  eff9c12acaacf7813da8247cf8ced26f057c3f99c8554831187dcb25b518c9e7  ./archive/utxo_scan.py
+  06debf4df1c4e245cca16c28836fc11d0e5feba81e0fff13cdd4c3e3553e0f95  ./archive/witness_split.py
+  1e8415c5933f771bca3359b08353d012dfa20838d42646fd58621fd3c644f4a7  ./deploy.sh
+  086acbd504521e70a9e13e5650e2d423f2c8764352011d7b3c0db95fb0a62ede  ./docs/alpha_warning_snippet.py
+  c28d517768f7fa7dfff661d7535aa8eab2164e2fb82e35cbadb1e9cf5f555ad8  ./docs/BUILD_PLAN.md
+  279766019f31b59063cc49afd5fb442611c60488a7099751dfa8f60c12fed2fd  ./docs/CARRIER_POLICY.md
+  a67d4bf1caf7515d4d7ccad757c6020efcaa772a6d8f0f0de1bd633dcb0b1792  ./docs/CARRIERS.md
+  65a0eb70e4929a317fc3a7db754d86e9076145033dd422770a6ae97c893f25a6  ./docs/CORE_PATCH.md
+  57e8d1bc5f79f2daf5bf597806fb2e4eb6b699cbd2231b8c61c4e6cbc7f7ce9d  ./docs/ELECTRS_PLAN.md
+  d42965178fff294ca55167f92421295a7a061b2989b5d6f9119c4489d9d7070d  ./docs/FORMAT_V2.md
+  de9e521215337ac0ae6d5052309d001b9ce1a88bed502e3673622d3d7a900d1e  ./docs/FORMAT.md
+  2a9a810961ef5c1668b98107ee12595ae0362e9e5a476ebf784d82ca78df3180  ./docs/monetary_ibd_design.md
+  d20e70c2ed65fa23de777b8b183145967289591270e6000f5a7111a1f5fa6eac  ./docs/Monetary_Nodes.md
+  e1bd8d62dcd41ffe9669026feeaf7d932dc04f4e3a9a5d24914772c998321f25  ./docs/RESULTS.md
+  76c8bff29e1a86e52bf9e5a98d3d3a35b1904192f5dad789712a892571ed6d80  ./docs/SPAM_TIEBREAK.md
+  037d1db0b3a9e86e32131e0057a869ec5c45637622447995362bfecf5fa060ec  ./docs/STRIP_RESULTS.md
+  8cd45c4fa3550b4129bc4424ec1497594a792dc8e6cac9483a88ef32d56e473d  ./docs/USER_AGENT.md
+  b1190298469b13723eb28c62b7e2d07ce2bfb9cf898a0fe6df7f4016534a247a  ./electrs_setup.sh
+  0e7c3f7b65a922aeb16b03b00b65248844dc2d85736d3454918ed7ac12cfbd88  ./electrum_onion.sh
+  af6c4b21af4d94d69935c7c2c690e08409268852af090a2064eee4eaf488b064  ./GAMEPLAN.md
+  195939c9831ac2cf03600f15871e9d1d2197fe8286ed25923a8ea73f6413384d  ./INSTALL.md
+  452489bf85f909feed1635f6eadfa525cbf87674b616f2e2625719795682f86a  ./install.sh
+  b98ab7271a92fc1f69e23397eabde10d177f81ac0a2a392cc06b547d56496e7e  ./LICENSE
+  aae9d4a0154edcf07fb539e495c4568ca67facfdbce2d4869a17de0800adab06  ./node_config.sh
+  aa1aea45b35630f643793264a444236883e6d29a908894e55335c9148f63d984  ./patch_build.sh
+  743f97d88ee9dac1a67eb051255f1bca7c63f65d3a3c17d4d9f8632a6ebf584d  ./patches/feature_spam_policy.py
+  65d18a7a5e88f43ac1df2b1a4134a6bd6ac516c7af431dda5bd694c3351267b1  ./peering_setup.sh
+  0afdae095f3a6b7c27b37eb2333052c857915c134e51036899c060490fc5e329  ./README.md
+  1e286de4e2e0deedc8ab47889a6532f339fbd8b2f2bb25f1cf2d09dbd83a38d5  ./release_check.sh
+  419a910e7ed5a9ac173fc118a9388d8f12acc9cb29e630009b442682161a4f9c  ./repo_layout.sh
+  ca61bec3b7ce3b987154dd038d2a5758db456e7f4e3632c40cc59433b81b6d9f  ./services_setup.sh
+  2e8559e585aea01e77425145982ddd52d24085404de117f546d3e394a3b7f81e  ./status_onion.sh
+  9841b343ed381f42c41c1775c3db79441f3a3fc199c2f40c77a96b649d576b73  ./tools/carrier_policy.py
+  f5360f81dc2efa698e55fcf7316cb91e7b9ad973b381c56466ea1ee11210e2cd  ./tools/chain_check.py
+  5bac5da0140f932a0bb1649e0d2f709f1fc42771a8d1f560b6688c99feb3dc4b  ./tools/chainstate_filter.py
+  8c5b850e8f39765521dd1e285b9d1350c35f7b45f381898404d60eeb9d72d694  ./tools/commit_scan.py
+  16c6d22b568e8a18b276f1b36020c8361d8d3840f5fc7f3bb2d6a727f1397a26  ./tools/flag_count.py
+  b662f2132e35bb14ed0350fcd733de84e80c331ee886c81003a7c7bcad95e29d  ./tools/mindex.py
+  6b6598d4238ba1c81d5c17e94d561630812217ba211c1aeeb9e1b82dc40b8ed2  ./tools/monetary_commit.py
+  74c7ee8942fde7ac8964119ea8750298f10c3dd956e03235e30c5f49f87b40ec  ./tools/monetary_convert.py
+  8b1e7d9362f49fcff44cf80c1fefe2b88e8fd163dde6aad774777315d482cb5d  ./tools/monetary_daemon.py
+  129527e2d916db36cf46ed667eb1a6e713737a137cf7c262fa4927696365ff53  ./tools/monetary_ibd.py
+  508c2cd249539a9f12793e30d330cdceed9ce3f15fe07b9dfb1367387379b333  ./tools/monetary_store.py
+  d6975cffccff24bd474463ae404667a7fe15c3a9edbdcb18fd18c9b48f747253  ./tools/monetary_ui.py
+  b7a98686654fde239e5066fcf024035f405f8b3ea9801a06e7de921ac0dd2195  ./tools/node_settings.py
+  94633d8691dca0267fed7fe936fd765b4153b0c5c49dc2f79aafa336098d974e  ./tools/prune_behind.py
+  9b170767cf929b7815b78f1e63e7a98e6cf33f1baf55e1a38566955ef16bb237  ./tools/quips.py
+  97a178ba9c5d0fc9fb1cb2da7360d489cba9f04f32324086353e4b54442369d8  ./tools/sbtc_scan.py
+  3b4e99f008d30b2e3fffaa928149f42dcd2d47d88813eb4df4635fca8fb5edb8  ./tools/spend_check.py
+  d152208c13107331e3cb81e6cb92e84522ca8d2840aa6f1d09def8d850370983  ./tools/status_page.py
+  cdb207784291f29dcbca18090b8042749ba37cc1ab9e8ba5b940d14f8f6c07ea  ./tools/test_monetary_store.py
+  f7a9f1bc55443c6c7929ac304be97b87e9b22f1e0cd63eea0873389a18881393  ./tools/tip_race.py
+  35f7d3eb8f6193a465f7868deb1be6ca492890235afdeb30c017e1a5b15b5d80  ./tools/tx_query.py
+  34b05a40ade1cfc83d481e03fb06b4b7ee1309a0fd40f5dffe53a7ecedd5bac5  ./tools/wallet_check.py
+  3cd9bcca27fd4be41d4761bd28933b6f52d8b09999f9bbdf7d9b625ac850adf2  ./tor_lockdown.sh
+  5b7bcec96b892da2f6e985a493fb642e98df32bd1e6b5c7354eabbf10b607bbe  ./tor_setup.sh
+
+======================================================================
+RESULT
+======================================================================
+All files present, all self-tests pass on this machine.
+
+Still not verified by this script, and worth doing by hand:
+  - the numbers in README.md match your latest build log
+  - the commitment C is quoted WITH its block height
+  - results/ and store/ are excluded by .gitignore

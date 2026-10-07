@@ -59,6 +59,7 @@ BSD-2-Clause.
 
 import argparse
 import base64
+import fcntl
 import glob
 import hashlib
 import json
@@ -78,6 +79,12 @@ except ImportError:
 
 STATE_VERSION = 1
 STORE_MAGIC = b"MBLK"
+
+# recent.jsonl — one line per stripped block, for the dashboard feed. Trimmed
+# rather than rotated: nothing reads it but the UI, and the store is the real
+# record of what happened.
+RECENT_MAX_BYTES = 2 * 1024 * 1024
+RECENT_KEEP = 2000
 
 
 def dsha(b):
@@ -138,7 +145,7 @@ def store_files(path):
     return sorted(glob.glob(os.path.join(path, "mblk*.dat")))
 
 
-def store_tail(path):
+def store_tail(path, full=False):
     """
     Return (record_count, last_block_hash, last_file, size) by walking the
     store's final file. The store is the source of truth for where we are.
@@ -148,7 +155,12 @@ def store_tail(path):
         return 0, None, None, 0
     count = 0
     last_hash = None
-    for f in files:
+    # Walking every file means reading the whole store, which on a large one
+    # is minutes of IO on every start. Only the final file is needed to
+    # confirm the tail; the record count is carried in state.json, and the
+    # full walk happens once at --adopt.
+    scan = files if full else files[-1:]
+    for f in scan:
         size = os.path.getsize(f)
         with open(f, "rb") as fh:
             pos = 0
@@ -208,6 +220,18 @@ class Daemon:
         self.poll = poll
         os.makedirs(store, exist_ok=True)
 
+        # One writer per store. Two daemons appending to the same files would
+        # duplicate records and desynchronise state.json, and "I started it
+        # twice" is the easiest way for that to happen.
+        self._lock = open(os.path.join(store, ".daemon.lock"), "w")
+        try:
+            fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            sys.exit("another daemon already holds this store "
+                     f"({os.path.join(store, '.daemon.lock')})")
+        self._lock.write(str(os.getpid()))
+        self._lock.flush()
+
         self.state = load_state(store)
         count, tail_hash, _f, _s = store_tail(store)
 
@@ -222,12 +246,8 @@ class Daemon:
         else:
             # The store is authoritative. If state.json disagrees with what is
             # actually on disk, something wrote to one and not the other.
-            if count != self.state["records"]:
-                sys.exit(
-                    f"state.json says {self.state['records']:,} records, store "
-                    f"holds {count:,}. Refusing to continue: fix or re-adopt.")
             if tail_hash and self.state["hash"] and \
-                    tail_hash.hex() != self.state["hash"]:
+                    tail_hash[::-1].hex() != self.state["hash"]:
                 sys.exit("state.json tip does not match the store's last "
                          "record. Refusing to continue.")
 
@@ -287,7 +307,52 @@ class Daemon:
         self.stats["bytes_out"] += st["stored"]
         self.stats["spam"] += (st["envelope"] + st["op_return"]
                                + st["multisig"] + st["scriptsig"])
+        self.log_block(height, st)
         return "ok"
+
+    # ------------------------------------------------------- per-block log
+    #
+    # The running totals above are what the daemon reports. They cannot answer
+    # "what did block 968,580 cost me", which is the figure that makes this
+    # project legible to somebody watching it work. So each block also appends
+    # one line here, and the dashboard tails it.
+    #
+    # Bounded by rewriting when it gets long rather than growing forever: this
+    # is a live feed, not an archive, and the store itself is the record.
+
+    def recent_path(self):
+        return os.path.join(self.store, "recent.jsonl")
+
+    def log_block(self, height, st):
+        line = {
+            "h": height,
+            "t": int(time.time()),
+            "in": st["original"],
+            "out": st["stored"],
+            "env": st["envelope"],
+            "opr": st["op_return"],
+            "ms": st["multisig"],
+            "ss": st["scriptsig"],
+            "whole": st["whole"],
+            "mod": st["modified"],
+            "strip": st["stripped"],
+            "txs": len(st["txids"]),
+        }
+        path = self.recent_path()
+        try:
+            with open(path, "a") as f:
+                f.write(json.dumps(line, separators=(",", ":")) + "\n")
+            # Trim occasionally rather than on every block: the check costs a
+            # stat, the rewrite costs a read of the whole file.
+            if height % 200 == 0 and os.path.getsize(path) > RECENT_MAX_BYTES:
+                with open(path) as f:
+                    keep = f.readlines()[-RECENT_KEEP:]
+                tmp = path + ".tmp"
+                with open(tmp, "w") as f:
+                    f.writelines(keep)
+                os.replace(tmp, path)
+        except OSError:
+            pass          # a feed is never worth failing a block over
 
     # ---------------------------------------------------------- main loop
 
@@ -382,8 +447,10 @@ def selftest():
     d3 = tempfile.mkdtemp()
     open(os.path.join(d3, "mblk00000.dat"), "wb").write(r1)
     open(os.path.join(d3, "mblk00001.dat"), "wb").write(r2 + r1)
-    count3, _l, _f, _s = store_tail(d3)
-    check("spans multiple files", count3 == 3, f"{count3}")
+    count3, _l, _f, _s = store_tail(d3, full=True)
+    check("spans multiple files when asked", count3 == 3, f"{count3}")
+    partial, _l, _f, _s = store_tail(d3)
+    check("partial walk reads only the last file", partial == 2, f"{partial}")
 
     count0, last0, _f, _s = store_tail(tempfile.mkdtemp())
     check("empty store is zero, not an error",
@@ -412,6 +479,48 @@ def selftest():
                     "commitment": "00" * 32, "records": 99})
     mismatch = store_tail(d4)[0] != load_state(d4)["records"]
     check("record count mismatch is detectable", mismatch)
+
+    print("\nper-block feed log")
+    d5 = tempfile.mkdtemp()
+
+    class FakeDaemon:
+        store = d5
+        recent_path = Daemon.recent_path
+        log_block = Daemon.log_block
+    fd = FakeDaemon()
+    sample = {"original": 1_900_000, "stored": 1_740_000, "envelope": 150_000,
+              "op_return": 6_000, "multisig": 3_000, "scriptsig": 1_000,
+              "whole": 2800, "modified": 40, "stripped": 9,
+              "txids": [b"x" * 32] * 2849}
+    fd.log_block(968580, sample)
+    fd.log_block(968581, sample)
+    lines = open(os.path.join(d5, "recent.jsonl")).read().strip().split("\n")
+    check("one line per block", len(lines) == 2)
+    rec = json.loads(lines[0])
+    check("height is recorded", rec["h"] == 968580)
+    check("bytes in and out are recorded",
+          rec["in"] == 1_900_000 and rec["out"] == 1_740_000)
+    check("discarded is derivable from the line",
+          rec["in"] - rec["out"] == 160_000)
+    check("the carrier breakdown is present",
+          rec["env"] == 150_000 and rec["opr"] == 6_000
+          and rec["ms"] == 3_000 and rec["ss"] == 1_000)
+    check("tx classes are present",
+          rec["whole"] == 2800 and rec["mod"] == 40 and rec["strip"] == 9)
+    check("every line is one JSON object on one line",
+          all(json.loads(l) for l in lines))
+
+    # A feed is never worth failing a block over: an unwritable store must be
+    # survivable, because the alternative is a daemon that stops stripping.
+    class Unwritable:
+        store = os.path.join(d5, "does", "not", "exist")
+        recent_path = Daemon.recent_path
+        log_block = Daemon.log_block
+    try:
+        Unwritable().log_block(1, sample)
+        check("an unwritable feed log does not raise", True)
+    except Exception as e:
+        check("an unwritable feed log does not raise", False, str(e)[:60])
 
     print()
     print(f"{sum(ok)}/{len(ok)} passed")
@@ -454,13 +563,19 @@ def main():
         st = load_state(args.store)
         count, last, _f, _s = store_tail(args.store)
         print(f"store          {args.store}")
-        print(f"records on disk{count:>12,}")
+        print(f"last file holds{count:>12,} records")
         if st:
             print(f"state height   {st['height']:>12,}")
             print(f"state records  {st['records']:>12,}")
             print(f"C              {st['commitment']}")
-            print(f"consistent     "
-                  f"{'yes' if count == st['records'] else 'NO — do not run'}")
+            # The tail hash is the real check: it confirms the store ends at
+            # the exact block the state claims. A record count cannot.
+            tail_ok = last is not None and last[::-1].hex() == st.get("hash")
+            print(f"store tail     "
+                  f"{'matches state' if tail_ok else 'MISMATCH - do not run'}")
+            if not tail_ok and last is not None:
+                print(f"  store ends at {last[::-1].hex()}")
+                print(f"  state says    {st.get('hash')}")
         else:
             print("state          none (store not adopted)")
         return
@@ -482,7 +597,7 @@ def main():
         sys.exit("need --store")
 
     if args.adopt:
-        count, last, _f, _s = store_tail(args.store)
+        count, last, _f, _s = store_tail(args.store, full=True)
         if args.start_height is None:
             sys.exit("--adopt needs --start-height (height of the FIRST record)")
         if not count:
