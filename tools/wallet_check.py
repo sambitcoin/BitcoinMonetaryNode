@@ -318,7 +318,22 @@ def iter_store(path, start_height):
                 raise ValueError(f"{os.path.basename(f)}: bad magic at {pos}")
             length = struct.unpack_from("<I", data, pos + 6)[0]
             end = pos + 10 + length
-            c = Cursor(data[pos + 42:end])
+            # Bounds and digest before parsing. This tool compares balances
+            # against an independent Electrum server, so a corrupt store here
+            # would be reported as a wallet DISAGREEMENT — sending someone to
+            # debug their wallet over a bad disk. Caught by an audit.
+            if end > len(data):
+                raise ValueError(f"{os.path.basename(f)}: truncated record at "
+                                 f"{pos} — store is incomplete")
+            digest = data[pos + 10:pos + 42]
+            body = data[pos + 42:end]
+            if dsha(body) != digest:
+                raise ValueError(
+                    f"{os.path.basename(f)}: body digest mismatch at {pos}.\n"
+                    "The store is corrupt, so any disagreement this tool "
+                    "reports would be the disk, not the wallet. Run "
+                    "monetary_store.py --verify first.")
+            c = Cursor(body)
             c.take(32)                       # block hash
             c.take(80)                       # header
             n_tx = c.varint()

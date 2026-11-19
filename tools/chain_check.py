@@ -100,6 +100,90 @@ def default_cookie(datadir):
 # ---------------------------------------------------------------- the check
 
 
+def check_blocks(blocks_dir, cache=None, checkpoints=None):
+    """Same check, straight from blk*.dat, with no node running.
+
+    WHY THIS EXISTS. A monetary node is meant to work without bitcoind, and
+    the most important thing to know before deriving a store is which chain
+    the block files belong to. Until now that could only be answered by
+    asking a running node — so the one check you must not skip was
+    impossible in exactly the situation this project is for: an orphaned
+    datadir, a decommissioned node, a drive carried over from elsewhere.
+
+    Reads nothing but headers. The index walks prev-hash links from genesis,
+    so it also establishes that the files form one chain rather than a heap
+    of blocks that merely contains the right ones.
+    """
+    checkpoints = CHECKPOINTS if checkpoints is None else checkpoints
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import monetary_store as ms
+    except ImportError as e:
+        return False, [f"need monetary_store.py beside this file: {e}"], {}
+
+    lines = []
+    key = ms.load_xor_key(blocks_dir)
+    lines.append("blocks dir      %s" % blocks_dir)
+    lines.append("XOR key         %s"
+                 % ("present (Core 28+)" if key else "none"))
+
+    blob, files = ms.build_index(blocks_dir, key,
+                                 cache or os.path.expanduser("~/.mstore_index"))
+    # height_map exits the process when it cannot find genesis — fine for a
+    # command line tool, wrong for this, which is a check whose whole job is
+    # to report a verdict. An orphaned datadir missing its early files is
+    # exactly the input this mode exists for, and it must come back with an
+    # answer rather than killing the caller.
+    try:
+        by_hash, heights = ms.height_map(blob, files, max(checkpoints) + 1)
+    except SystemExit as e:
+        lines.append("")
+        lines.append("Cannot walk these files from genesis: %s" % e)
+        lines.append("Either the early block files are missing, or they are")
+        lines.append("not a Bitcoin chain. Nothing can be derived from them.")
+        return False, lines, {"tip": 0, "tested": 0, "skipped": 0}
+    tip = max(heights) if heights else 0
+
+    lines.append("block files     %d" % len(files))
+    lines.append("highest linked  %s" % f"{tip:,}")
+    lines.append("")
+
+    ok, tested, skipped = True, 0, 0
+    for height in sorted(checkpoints):
+        want = checkpoints[height]
+        if height not in heights:
+            lines.append(f"  [skip] {height:>9,}  not reachable from genesis"
+                         " in these files")
+            skipped += 1
+            continue
+        got = heights[height][::-1].hex()
+        if got == want:
+            lines.append(f"  [ok  ] {height:>9,}  {got}")
+            tested += 1
+        else:
+            ok = False
+            lines.append(f"  [FAIL] {height:>9,}")
+            lines.append(f"           expected {want}")
+            lines.append(f"           files have {got}")
+            if height >= SPLIT_HEIGHT:
+                lines.append("           at or above the 2026 split height —"
+                             " these files are the wrong chain")
+
+    lines.append("")
+    if tested == 0:
+        ok = False
+        lines.append("NO CHECKPOINTS TESTED. These files do not reach any"
+                     " known height, so this proves nothing.")
+    elif not ok:
+        lines.append("MISMATCH. Do not derive a store from these files.")
+    else:
+        lines.append(f"All {tested} checkpoints matched"
+                     + (f", {skipped} not reached." if skipped else "."))
+        lines.append("These files are the SHA256 chain and form one chain"
+                     " from genesis.")
+    return ok, lines, {"tip": tip, "tested": tested, "skipped": skipped}
+
+
 def check(rpc, checkpoints=None):
     """Compare a node against the checkpoints. Returns (ok, lines, facts)."""
     checkpoints = CHECKPOINTS if checkpoints is None else checkpoints
@@ -249,6 +333,59 @@ def selftest():
     ok, lines = compare(a, b, [100, 200])
     ck("disagreeing nodes are caught", not ok)
 
+    # --- from block files, with no node ------------------------------
+    #
+    # The point of this mode is that it works when nothing is running, so
+    # the test builds real blk files and reads them rather than mocking RPC.
+    print("\nfrom block files, no node")
+    import struct
+    import tempfile
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import monetary_store as ms
+
+    base = tempfile.mkdtemp()
+    d1 = os.path.join(base, "blocks")
+    os.makedirs(d1, exist_ok=True)
+    prev, hashes = b"\x00" * 32, {}
+    with open(os.path.join(d1, "blk00000.dat"), "wb") as f:
+        for i in range(6):
+            hdr = (struct.pack("<i", 4) + prev + b"\x22" * 32
+                   + struct.pack("<III", 1700000000, 0x1d00ffff, i))
+            body = hdr + b"\x00"
+            f.write(b"\xf9\xbe\xb4\xd9" + struct.pack("<I", len(body)) + body)
+            prev = ms.dsha(hdr)
+            hashes[i] = prev
+
+    # height_map walks from the real genesis hash. These synthetic blocks
+    # cannot have it, so point the constant at this chain's first block.
+    real_genesis = ms.GENESIS
+    ms.GENESIS = hashes[0]
+    cps = {3: hashes[3][::-1].hex(), 5: hashes[5][::-1].hex()}
+    good, lines, facts = check_blocks(d1, os.path.join(base, "c1"), cps)
+    ck("matching files pass with no node running", good, lines[-1])
+    ck("it reports how many checkpoints it tested", facts["tested"] == 2)
+    ck("and says the files form one chain from genesis",
+       any("one chain from genesis" in x for x in lines))
+
+    bad, lines, _ = check_blocks(d1, os.path.join(base, "c2"), {3: "aa" * 32})
+    ck("a wrong hash at a known height fails", not bad)
+    ck("and the failure names both hashes",
+       any("expected" in x for x in lines)
+       and any("files have" in x for x in lines))
+
+    _b2, lines, _ = check_blocks(d1, os.path.join(base, "c3"),
+                                 {SPLIT_HEIGHT: "bb" * 32})
+    ck("a checkpoint the files never reach is skipped, not failed",
+       any("not reachable from genesis" in x for x in lines))
+
+    # A datadir with no genesis must return a verdict, not exit. This is the
+    # orphaned-drive case the mode is for.
+    ms.GENESIS = real_genesis
+    nog, lines, _ = check_blocks(d1, os.path.join(base, "c4"), cps)
+    ck("a datadir without genesis reports instead of exiting", not nog)
+    ck("and says what is wrong",
+       any("Cannot walk these files from genesis" in x for x in lines))
+
     print(f"\n{sum(passed)}/{len(passed)} passed")
     return 0 if all(passed) else 1
 
@@ -267,11 +404,23 @@ def main():
     ap.add_argument("--rpc-password")
     ap.add_argument("--compare-url", help="second node's RPC URL to cross-check")
     ap.add_argument("--compare-cookie")
+    ap.add_argument("--blocks", metavar="DIR",
+                    help="check blk*.dat directly, with no node running. "
+                         "For an orphaned datadir, a decommissioned node, or "
+                         "a drive carried over from another machine.")
+    ap.add_argument("--index-cache",
+                    default=os.path.expanduser("~/.mstore_index"))
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
 
     if a.selftest:
         return selftest()
+
+    if a.blocks:
+        ok, lines, _facts = check_blocks(a.blocks, a.index_cache)
+        for line in lines:
+            print(line)
+        return 0 if ok else 1
 
     try:
         rpc = RPC(a.rpc_url, a.rpc_user, a.rpc_password,

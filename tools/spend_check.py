@@ -367,7 +367,25 @@ def iter_store(path, start_height):
                 raise ValueError(f"{os.path.basename(f)}: bad magic at {pos}")
             length = struct.unpack_from("<I", data, pos + 6)[0]
             end = pos + 10 + length
-            c = Cursor(data[pos + 42:end])
+            # Bounds and digest, before anything is parsed.
+            #
+            # This tool produces CRYPTOGRAPHIC results — signatures verified
+            # against scriptPubKeys recovered from filter entries — and it was
+            # reading records without checking the body digest at all. A
+            # corrupt store would have yielded plausible-looking verification
+            # output, which for a project whose pitch is "the logs are the
+            # evidence" is the exact failure to close. Caught by an audit.
+            if end > len(data):
+                raise ValueError(f"{os.path.basename(f)}: truncated record at "
+                                 f"{pos} — store is incomplete")
+            digest = data[pos + 10:pos + 42]
+            body = data[pos + 42:end]
+            if dsha(body) != digest:
+                raise ValueError(
+                    f"{os.path.basename(f)}: body digest mismatch at {pos}.\n"
+                    "The store is corrupt. Refusing to compute spend results "
+                    "over it — run monetary_store.py --verify first.")
+            c = Cursor(body)
             c.take(32)
             c.take(80)
             n_tx = c.varint()
@@ -400,7 +418,24 @@ def iter_store(path, start_height):
             pos = end
 
 
-def run(path, start_height, verify_sigs, progress):
+def run(path, start_height, verify_sigs, progress, completeness_only=False):
+    """
+    MEMORY. `dropped` holds one entry per dropped output — under a million
+    across the whole chain, a few hundred MB at worst, and it is what the
+    central claim needs.
+
+    `known` is different: it holds every retained output until something
+    spends it, which at the tip is the live UTXO set. Roughly 100 million
+    entries, tens of gigabytes of Python dict. That is only needed for VALUE
+    CONSERVATION, which is a secondary check — and nothing warned about it,
+    so reproducing the published result quietly required a very large
+    machine. An audit caught it.
+
+    completeness_only skips `known` entirely. The question the tool exists to
+    answer — is a filter entry present for every spend of a dropped output —
+    is unaffected, and so is signature verification, because both read from
+    `dropped`.
+    """
     dropped = {}          # (txid, vout) -> (amount, spk, height)
     known = {}            # (txid, vout) -> amount, for retained outputs
     stats = {
@@ -462,11 +497,13 @@ def run(path, start_height, verify_sigs, progress):
                 elif prev_txid != b"\x00" * 32:
                     all_known = False
 
-            for vout_i, amount, spk in vout:
-                if not (spk and spk[0] == OP_RETURN):
-                    known[(txid, vout_i)] = amount
+            if not completeness_only:
+                for vout_i, amount, spk in vout:
+                    if not (spk and spk[0] == OP_RETURN):
+                        known[(txid, vout_i)] = amount
 
-            if all_known and vin and vin[0][0] != b"\x00" * 32:
+            if (not completeness_only
+                    and all_known and vin and vin[0][0] != b"\x00" * 32):
                 total_out = sum(a for _i, a, _s in vout)
                 stats["value_checked"] += 1
                 if total_in >= total_out:
@@ -619,6 +656,11 @@ def main():
                     help="cryptographically verify up to N bare multisig "
                          "spends (slow: pure-Python secp256k1)")
     ap.add_argument("--progress", type=int, default=10000)
+    ap.add_argument("--completeness-only", action="store_true",
+                    help="skip value conservation, which needs the whole "
+                         "live UTXO set in RAM (tens of GB at the tip). "
+                         "Completeness and signature verification are "
+                         "unaffected — both read the filter entries.")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
 
@@ -634,8 +676,17 @@ def main():
               f"cryptographically")
     print()
 
+    if not args.completeness_only:
+        print("NOTE: value conservation tracks every unspent output in RAM.")
+        print("      Near the chain tip that is the live UTXO set — roughly")
+        print("      100 million entries, tens of GB. If this machine has")
+        print("      less, use --completeness-only; the central claim is")
+        print("      unaffected.")
+        print()
+
     stats, examples, failures = run(args.store, args.start_height,
-                                    args.verify_sigs, args.progress)
+                                    args.verify_sigs, args.progress,
+                                    args.completeness_only)
 
     print()
     print("=" * 68)

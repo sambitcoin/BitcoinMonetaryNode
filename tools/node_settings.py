@@ -324,6 +324,66 @@ SETTINGS = [
     # Not bitcoin.conf keys. These configure this project's own tools, and
     # they are in the same panel because an operator does not care which
     # process reads a setting, only what it does.
+    # Which networks the embedded node connects over.
+    #
+    # These are real now. When bitcoind ran outside the app these were
+    # somebody else's business; the node is inside the app, so the app
+    # writes its bitcoin.conf and these decide what goes in it.
+    #
+    # Tor on and everything else off is the default, and clearnet is the
+    # only one with a warning in capital letters, because it is the only
+    # one that publishes your home IP address to everyone you connect to.
+    # The indexer, and the disk trade that comes with it.
+    dict(group="Network", key="useindex", type=BOOL, default=1,
+         scope=SCOPE_MONETARY,
+         label="Run the address index",
+         help="On by default. This is what Sparrow and Electrum connect "
+              "to; with it off, no wallet can use this node and the app "
+              "is a validator and a store only.\n\n"
+              "It also decides your disk bill. The indexer refuses to run "
+              "against a pruned node, so with it ON the node keeps every "
+              "block: the whole blockchain PLUS the monetary store, "
+              "roughly twice the chain. With it OFF the node reclaims "
+              "blocks behind the stripper and costs about one chain. "
+              "Takes effect when the app restarts."),
+    dict(group="Network", key="usetor", type=BOOL, default=1,
+         scope=SCOPE_MONETARY,
+         label="Connect over Tor",
+         help="On by default, and the reason this project exists in the "
+              "shape it does. Peers see a Tor exit, not you. Takes effect "
+              "when the app restarts."),
+    dict(group="Network", key="usei2p", type=BOOL, default=0,
+         scope=SCOPE_MONETARY,
+         label="Also connect over I2P",
+         help="A second anonymising network, independent of Tor. Fewer "
+              "Bitcoin peers run it, so expect a smaller set of "
+              "connections rather than a faster node. Off by default. "
+              "Requires an I2P router, which this app does not bundle."),
+    dict(group="Network", key="useclearnet", type=BOOL, default=0,
+         scope=SCOPE_MONETARY,
+         label="Connect over clearnet",
+         warn="THIS PUBLISHES YOUR IP ADDRESS. Every peer you connect to "
+              "learns the public address of this machine, and so does "
+              "anyone watching the network between you. That is a "
+              "permanent, un-take-back-able disclosure linking your home "
+              "connection to a Bitcoin node. It is also faster and more "
+              "reliable, which is the trade being made. Off by default.",
+         help="Off by default. With Tor on and this off, the node has no "
+              "clearnet route at all. Turning it on takes effect when the "
+              "app restarts."),
+    dict(group="Monetary node", key="torrequired", type=BOOL, default=1,
+         scope=SCOPE_MONETARY,
+         label="Require Tor",
+         warn="Turning this off does not connect you to clearnet, and "
+              "turning it on does not prevent it. Whether the node uses Tor "
+              "is decided by bitcoind and, on this project, enforced by a "
+              "kernel filter — neither of which a web page may change. This "
+              "setting governs how THIS APP reacts to what it observes.",
+         help="On, which is the default: a clearnet peer is treated as a "
+              "fault. The banner turns red, and the public status page "
+              "refuses to publish while it lasts. Off: clearnet is reported "
+              "plainly and nothing is withheld. Turn it off only if you "
+              "deliberately run without Tor and are tired of being told."),
     dict(group="Monetary node", key="raceobserve", type=BOOL, default=1,
          scope=SCOPE_MONETARY,
          label="Watch for competing blocks",
@@ -661,9 +721,18 @@ def restore_defaults(path, help_blob=None, keys=None):
 
 
 def restore_all_defaults(paths, help_blob=None):
-    """Restore defaults in every scope. -> (written, {scope: backup})."""
+    """Restore defaults for every scope `paths` can write.
+
+    Scoped to the paths given rather than to the whole catalogue. A caller
+    that may only write the monetary file — the platform packages, where the
+    Bitcoin service owns bitcoin.conf — passes one path and gets the monetary
+    settings reset. Covering every scope regardless would make this raise
+    instead, so "restore defaults" would be a button that only errors.
+    """
     changes = {}
     for k, s in BY_KEY.items():
+        if s.get("scope", SCOPE_BITCOIND) not in paths:
+            continue
         if is_supported(s, help_blob) is False:
             continue
         if s["default"] == "":
@@ -915,7 +984,12 @@ def selftest():
        all(s.get("scope") in (SCOPE_BITCOIND, SCOPE_MONETARY)
            for s in SETTINGS))
     mon = [s for s in SETTINGS if s["scope"] == SCOPE_MONETARY]
-    ck("the monetary-node options are monetary-scoped", len(mon) == 3)
+    # Four monetary-node options plus three network toggles. The count is
+    # asserted rather than left loose so that adding a setting is a
+    # deliberate act with a test to update, not something that drifts in.
+    ck("the monetary-node options are monetary-scoped", len(mon) == 8, len(mon))
+    ck("and none of them writes bitcoin.conf",
+       all(x["scope"] == SCOPE_MONETARY for x in mon))
     ck("monetary options skip the bitcoind support check",
        all(is_supported(s, help_core) is True for s in mon))
     ck("a bitcoind option absent from the build is still unsupported",
@@ -927,6 +1001,34 @@ def selftest():
        "not a tiebreak" in BY_KEY["racewindow"]["warn"])
     ck("the race observer says it cannot change chain selection",
        "nothing about it can" in BY_KEY["raceobserve"]["help"])
+
+    # Tor is required unless the operator says otherwise, and the setting is
+    # explicit that it governs this app rather than the node.
+    # Network selection. Tor on, everything else off, and clearnet is the
+    # only one that carries a warning — it is the only one that discloses
+    # the operator's home address, permanently, to everyone they peer with.
+    ck("the index is on by default", BY_KEY["useindex"]["default"] == 1)
+    ck("and says what turning it off costs",
+       "no wallet can use this node" in BY_KEY["useindex"]["help"])
+    ck("and what it buys", "one chain" in BY_KEY["useindex"]["help"])
+    ck("tor is on by default", BY_KEY["usetor"]["default"] == 1)
+    ck("i2p is off by default", BY_KEY["usei2p"]["default"] == 0)
+    ck("clearnet is off by default", BY_KEY["useclearnet"]["default"] == 0)
+    ck("clearnet warns, in terms nobody can miss",
+       "PUBLISHES YOUR IP" in BY_KEY["useclearnet"]["warn"])
+    ck("and says the disclosure cannot be taken back",
+       "un-take-back-able" in BY_KEY["useclearnet"]["warn"])
+    ck("tor needs no warning", "warn" not in BY_KEY["usetor"])
+    for _k in ("usetor", "usei2p", "useclearnet"):
+        ck("%s is a monetary-scope setting" % _k,
+           BY_KEY[_k]["scope"] == SCOPE_MONETARY)
+        ck("%s is a toggle" % _k, BY_KEY[_k]["type"] == BOOL)
+
+    ck("Tor is required by default", BY_KEY["torrequired"]["default"] == 1)
+    ck("and it says plainly that it does not control the node",
+       "does not connect you to clearnet" in BY_KEY["torrequired"]["warn"])
+    ck("it is a monetary option, not a bitcoind one",
+       BY_KEY["torrequired"]["scope"] == SCOPE_MONETARY)
 
     mconf = os.path.join(d, "monetary", "monetary.conf")
     paths = {SCOPE_BITCOIND: conf, SCOPE_MONETARY: mconf}

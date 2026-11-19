@@ -75,6 +75,7 @@ Standard library only. BSD-2-Clause.
 import argparse
 import glob
 import hashlib
+import json
 import os
 import struct
 import sys
@@ -100,6 +101,16 @@ SECP_P = 2**256 - 2**32 - 977
 
 INSCRIPTION_START = 767430
 DUST_THRESHOLD = 1000
+
+# Protocol tags that open an inscription envelope. The ordinals envelope is
+# OP_FALSE OP_IF <"ord"> ... OP_ENDIF, and "ord" is the protocol identifier
+# every inscription carries. BRC-20 and the rest ride on ordinals, so this
+# one tag covers them.
+#
+# An envelope whose tag is not here is NOT detected and its bytes stay in the
+# store. That is deliberate: see envelope_payload for why a shape-only match
+# is unsafe.
+INSCRIPTION_MARKERS = (b"ord",)
 
 # index record: hash(32) prev(32) file_idx(H) offset(Q) size(I)
 IDX_REC = struct.Struct("<32s32sHQI")
@@ -186,26 +197,72 @@ class BlockFile:
 # ---------------------------------------------------------------- block index
 
 
-def scan_file(path, key, file_idx):
-    """Return [(hash, prev, file_idx, offset, size), ...] for one blk file."""
+def scan_file(path, key, file_idx, quiet=False, is_tail=False):
+    """Return [(hash, prev, file_idx, offset, size), ...] for one blk file.
+
+    STOPPING IS REPORTED. Core's blk files end with slack, so reaching
+    non-magic bytes is the normal way to finish a file and is silent. Anything
+    else — a bad magic partway through, an implausible size, a short header —
+    means this file had more in it than was read, and the index is short by
+    however many blocks followed.
+
+    That used to be three bare `break`s. A file corrupted in the middle
+    truncated the index with no message, height_map then walked a shorter
+    chain, and the stripper could process a stale branch near the tip without
+    a word. The README warns that a reader ignoring XOR "finds zero blocks and
+    reports no error"; the same silence applied here. An audit caught it.
+    """
     out = []
     bf = BlockFile(path, key)
+    why = None
     try:
         while True:
             head = bf.read_seq(8)
-            if len(head) < 8 or head[:4] != MAINNET_MAGIC:
+            if len(head) < 8:
+                break                      # clean end of file
+            if head[:4] != MAINNET_MAGIC:
+                # Core pads with zeroes; anything else is unexpected.
+                if head[:4] != b"\x00\x00\x00\x00":
+                    why = ("bad magic %s at offset %d"
+                           % (head[:4].hex(), bf.tell() - 8))
                 break
             size = struct.unpack("<I", head[4:])[0]
             if size < 80 or size > 8_000_000:
+                why = ("implausible block size %d at offset %d"
+                       % (size, bf.tell() - 4))
                 break
             off = bf.tell()
             hdr = bf.read_seq(80)
             if len(hdr) < 80:
+                why = ("header truncated at offset %d — file ends mid-block"
+                       % off)
                 break
             out.append((dsha(hdr), hdr[4:36], file_idx, off, size))
             bf.seek(off + size)
     finally:
         bf.close()
+    if why and not quiet:
+        # The highest-numbered file is the one bitcoind is appending to right
+        # now, so stopping partway through it is normal: a block may be half
+        # written, or written between our size read and our seek. Reporting
+        # that as "your heights will be wrong" is alarming and false — it
+        # cried wolf on the first real store it met.
+        #
+        # In any other file it means exactly what it says.
+        if is_tail:
+            print("  %s: stopped after %d blocks — %s"
+                  % (os.path.basename(path), len(out), why), file=sys.stderr)
+            print("          This is the file bitcoind is currently writing, "
+                  "so a partial block at the end is expected.",
+                  file=sys.stderr)
+        else:
+            print("  WARNING %s: stopped after %d blocks — %s"
+                  % (os.path.basename(path), len(out), why), file=sys.stderr)
+            print("          This is NOT the newest block file, so the data "
+                  "after that point was skipped.", file=sys.stderr)
+            print("          The index is short by however many blocks "
+                  "followed, and heights derived from it will be wrong.",
+                  file=sys.stderr)
     return out
 
 
@@ -290,8 +347,11 @@ def build_index(blocks_dir, key, cache_path):
               f"{f', reusing {len(reused_paths)} from cache' if reused_paths else ''}"
               "...", flush=True)
         t0 = time.time()
+        # The last path in `current` is the highest-numbered blk file, the
+        # one bitcoind is appending to.
+        tail_path = current[-1][0] if current else None
         for n, (fi, p) in enumerate(todo, 1):
-            for rec in scan_file(p, key, fi):
+            for rec in scan_file(p, key, fi, is_tail=(p == tail_path)):
                 kept += IDX_REC.pack(*rec)
             if n % 100 == 0 or n == len(todo):
                 el = time.time() - t0
@@ -428,7 +488,34 @@ def iter_script(script):
 # ---------------------------------------------------------------- classifying
 
 
-def envelope_payload(script):
+def envelope_payload(script, markers=INSCRIPTION_MARKERS):
+    """Bytes carried by an inscription envelope in this script, or 0.
+
+    WHY A PROTOCOL MARKER IS REQUIRED, AND WHAT IT COST TO LEARN.
+
+    An earlier version of this function treated the SHAPE of the envelope as
+    sufficient: a false push before OP_IF, or a true push before OP_NOTIF,
+    then count every data push through to OP_ENDIF. That is how the ordinals
+    envelope is built, so it matched inscriptions correctly.
+
+    It also matched ordinary contracts. A Lightning HTLC in tapscript pushes
+    a preimage inside OP_IF. A hash-locked P2WSH script pushes a digest. Any
+    of those produced a non-zero count, which marked the transaction touched,
+    which made rebuild_without discard the ENTIRE WITNESS — destroying
+    signature material for a transaction that carried no data at all, and
+    inflating the modified-transaction figure this project publishes.
+
+    Found by an outside reviewer reading the code, not by any test here.
+
+    So the test is now positive: the first data push inside the envelope must
+    be a known protocol tag. The ordinals envelope opens with "ord", which is
+    what the protocol specifies and what every inscription in the chain
+    carries. A contract that happens to use OP_IF does not.
+
+    The cost of this direction is that an envelope protocol not in `markers`
+    is not detected and its bytes are retained. That is the correct way to be
+    wrong: a missed carrier wastes disk, a false match destroys signatures.
+    """
     try:
         ops = list(iter_script(script))
     except ValueError:
@@ -443,6 +530,7 @@ def envelope_payload(script):
         nxt = ops[i + 1][0]
         if (false_push and nxt == OP_IF) or (true_push and nxt == OP_NOTIF):
             depth, j = 1, i + 2
+            body, first_push = 0, None
             while j < len(ops):
                 o, d = ops[j]
                 if o in (OP_IF, OP_NOTIF):
@@ -452,8 +540,13 @@ def envelope_payload(script):
                     if depth == 0:
                         break
                 elif d is not None:
-                    total += len(d)
+                    if first_push is None:
+                        first_push = d
+                    body += len(d)
                 j += 1
+            # The envelope only counts if it announces itself.
+            if first_push is not None and first_push in markers:
+                total += body
             i = j + 1
             continue
         i += 1
@@ -522,22 +615,45 @@ def is_data_multisig(script):
     return False
 
 
-def classify_output(script, value, height, op_return_limit):
+def classify_output(script, value, height, op_return_limit, policy=None):
     """
     Returns (kind, reason).
 
     kind is 'spam' for data carriers whose bytes are dropped from block
     storage, 'dust' for economically abandoned outputs that are retained in
     blocks but excluded from chainstate, or 'monetary'.
+
+    WHY A POLICY OBJECT IS THREADED THROUGH HERE.
+
+    carrier_policy.py holds the retention ruleset and publishes a policy_id
+    whose own docstring says a commitment is only comparable against one
+    computed under the same policy. For weeks nothing imported it: the
+    stripper applied a bare length test while status_page.py published a
+    policy_id describing a ruleset that had never run. Two nodes could agree
+    on C and disagree on the policy that produced it, which makes both
+    numbers meaningless.
+
+    Found by an outside reviewer. Now the policy decides, and the id that
+    gets published is the id of the code that ran.
+
+    policy=None keeps the plain length rule, so callers that genuinely have
+    no policy (the format tests) still work and still match Core.
     """
     if script and script[0] == OP_RETURN:
+        if policy is not None:
+            v = policy.should_retain(script)
+            return ("monetary", "") if v.retain else ("spam", "op_return")
         if len(script) > op_return_limit:
             return "spam", "op_return"
         return "monetary", ""
     if is_data_multisig(script):
         return "spam", "multisig"
     if is_data_pubkey(script):
-        return "spam", "multisig"
+        # Its own label. Reporting fake-P2PK under "multisig" conflated two
+        # different carriers in the published per-carrier table, so the
+        # "bare multisig" figure was really bare-multisig-plus-P2PK. An audit
+        # caught the mislabel.
+        return "spam", "pubkey"
     if (value < DUST_THRESHOLD and height >= INSCRIPTION_START
             and len(script) == 34 and script[0] == 0x51 and script[1] == 0x20):
         return "dust", "p2tr_dust"
@@ -547,7 +663,7 @@ def classify_output(script, value, height, op_return_limit):
 # ---------------------------------------------------------------- stripping
 
 
-def strip_block(raw, height, op_return_limit, scriptsig_limit):
+def strip_block(raw, height, op_return_limit, scriptsig_limit, policy=None):
     """
     Produce the stored representation of a block.
 
@@ -562,7 +678,8 @@ def strip_block(raw, height, op_return_limit, scriptsig_limit):
     filter_entries = []
     txids = []
     st = {"whole": 0, "modified": 0, "stripped": 0, "dust_outputs": 0,
-          "envelope": 0, "op_return": 0, "multisig": 0, "scriptsig": 0}
+          "envelope": 0, "op_return": 0, "multisig": 0, "pubkey": 0,
+          "scriptsig": 0}
 
     for _ in range(n_tx):
         tx_start = c.p
@@ -574,12 +691,14 @@ def strip_block(raw, height, op_return_limit, scriptsig_limit):
         io_start = c.p
         n_in = c.varint()
         scriptsig_spam = 0
-        for _ in range(n_in):
+        strip_sigs = []
+        for vin in range(n_in):
             c.take(32); c.take(4)
             sl = c.varint()
             c.take(sl)
             if sl > scriptsig_limit:
                 scriptsig_spam += sl
+                strip_sigs.append(vin)
             c.take(4)
 
         n_out = c.varint()
@@ -588,7 +707,8 @@ def strip_block(raw, height, op_return_limit, scriptsig_limit):
         for vout in range(n_out):
             amount = c.u64()
             spk = c.take(c.varint())
-            kind, reason = classify_output(spk, amount, height, op_return_limit)
+            kind, reason = classify_output(spk, amount, height,
+                                           op_return_limit, policy)
             if kind == "spam":
                 dropped_outs.append((vout, amount, spk))
                 st[reason] = st.get(reason, 0) + len(spk)
@@ -631,7 +751,7 @@ def strip_block(raw, height, op_return_limit, scriptsig_limit):
         elif touched:
             st["modified"] += 1
             body = rebuild_without(raw, tx_start, io_start, io_end, tx_end,
-                                   dropped_outs)
+                                   dropped_outs, strip_sigs)
             tx_parts.append(bytes([FLAG_MODIFIED]) + txid
                             + write_varint(len(body)) + body)
         else:
@@ -658,26 +778,42 @@ def strip_block(raw, height, op_return_limit, scriptsig_limit):
     return record, st
 
 
-def rebuild_without(raw, tx_start, io_start, io_end, tx_end, dropped):
+def rebuild_without(raw, tx_start, io_start, io_end, tx_end, dropped,
+                    strip_sigs=()):
     """
-    Reserialise a transaction in legacy form with the dropped outputs removed.
+    Reserialise a transaction in legacy form with the dropped outputs removed
+    and the scriptSig of each input in `strip_sigs` emptied.
 
     Witness data is not carried into the store for modified transactions: it is
     either spam, or signature material already verified when the block was
     connected.
+
+    WHY scriptSig EMPTYING IS HERE NOW. Until an outside review pointed it
+    out, oversized scriptSig was counted into st["scriptsig"] and then copied
+    verbatim into the store — so the figure this project published as a
+    saving was bytes that never left the disk. Counting a carrier and keeping
+    it is the worst of both: the claim is false and the disk is still full.
+
+    The outpoint and sequence of a stripped input are preserved, so the store
+    still records exactly what was spent. Only the payload goes.
     """
     dropped_vouts = {v for v, _a, _s in dropped}
+    strip = set(strip_sigs)
     c = Cursor(raw[io_start:io_end])
 
     out = [raw[tx_start:tx_start + 4]]           # version
     n_in = c.varint()
     inputs = [write_varint(n_in)]
-    for _ in range(n_in):
+    for vin in range(n_in):
         start = c.p
-        c.take(32); c.take(4)
-        c.take(c.varint())
-        c.take(4)
-        inputs.append(c.d[start:c.p])
+        outpoint = c.take(32) + c.take(4)
+        sl = c.varint()
+        sig = c.take(sl)
+        seq = c.take(4)
+        if vin in strip:
+            inputs.append(outpoint + write_varint(0) + seq)
+        else:
+            inputs.append(c.d[start:c.p])
     out.extend(inputs)
 
     n_out = c.varint()
@@ -778,7 +914,8 @@ def verify_store(path):
     files = sorted(glob.glob(os.path.join(path, "mblk*.dat")))
     if not files:
         sys.exit(f"no mblk*.dat in {path}")
-    ok = bad = corrupt = 0
+    ok = bad = corrupt = broken = 0
+    last_hash = None
     filters = 0
     t0 = time.time()
     for f in files:
@@ -802,25 +939,69 @@ def verify_store(path):
                 bad += 1
                 print(f"  MERKLE MISMATCH in {os.path.basename(f)}",
                       file=sys.stderr)
+
+            # Does each record extend the one before it?
+            #
+            # Per-record checks cannot see this, so without it a store of
+            # internally-valid blocks from a stale fork — or the same blocks
+            # written out of order — verified clean and printed "the store is
+            # sufficient". True of each block, and misleading about the
+            # store. An audit called that an overclaim; it was right.
+            prev = rec["header"][4:36]
+            if last_hash is not None and prev != last_hash:
+                broken += 1
+                print(f"  CHAIN BREAK in {os.path.basename(f)}: record does "
+                      f"not extend the previous one\n"
+                      f"    expected prev  {last_hash[::-1].hex()}\n"
+                      f"    header says    {prev[::-1].hex()}",
+                      file=sys.stderr)
+            last_hash = rec["block_hash"]
+
             filters += len(rec["filters"])
     print()
     print(f"verified from disk in {time.time()-t0:.1f}s")
     print(f"  blocks verified     {ok:,}")
     print(f"  blocks failed       {bad:,}")
     print(f"  records corrupt     {corrupt:,}")
+    print(f"  chain breaks        {broken:,}")
     print(f"  filter entries      {filters:,}")
-    return ok, bad + corrupt
+    if broken:
+        print()
+        print("  The records do not form one chain. Each block may still be")
+        print("  valid on its own; they are not a contiguous history, so no")
+        print("  commitment computed over them means anything.")
+    print()
+    print("  What this checked: every record's digest, that each block hash")
+    print("  matches its own header, that the stored txids reproduce the")
+    print("  merkle root, and that each record extends the previous one.")
+    print("  What it did NOT check: that scripts execute, or that this is")
+    print("  the most-work chain. Core did the first; chain_check.py and")
+    print("  your own node answer the second.")
+    return ok, bad + corrupt + broken
 
 
 # ---------------------------------------------------------------- main
 
 
 def human(n):
-    for u in ("B", "KB", "MB", "GB", "TB"):
-        if abs(n) < 1024:
-            return f"{n:,.1f} {u}"
-        n /= 1024
-    return f"{n:,.1f} PB"
+    """Binary units, labelled as such.
+
+    This project measures storage the way df and du do, in powers of 1024.
+    It used to print those values with decimal labels — "674.7 GB" for a
+    store that is 674.7 GiB and 724.5 GB — and two tools in the same
+    repository disagreed, one dividing by 1024 and one by 1000, both saying
+    GB. Every storage figure this project has published carried that error.
+    Caught when monetary_commit.py read the same store as monetary_store.py
+    and reported a different size.
+
+    Percentages are unaffected: they are ratios of same-base numbers.
+    """
+    x = float(n)
+    for u in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(x) < 1024:
+            return f"{x:,.1f} {u}"
+        x /= 1024
+    return f"{x:,.1f} PiB"
 
 
 def main():
@@ -867,7 +1048,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     tot = {"original": 0, "stored": 0, "whole": 0, "modified": 0,
            "stripped": 0, "dust_outputs": 0, "filter_entries": 0,
-           "envelope": 0, "op_return": 0, "multisig": 0, "scriptsig": 0}
+           "envelope": 0, "op_return": 0, "multisig": 0, "pubkey": 0,
+          "scriptsig": 0}
     merkle_ok = merkle_bad = 0
 
     file_idx = 0
@@ -877,6 +1059,23 @@ def main():
     open_path, bf = None, None
     t0 = time.time()
     n_blocks = args.end - args.start + 1
+    # The batch stripper needs the same policy the daemon uses, or a store
+    # built here and then followed by the daemon would be two different
+    # rulesets in one commitment chain. Wiring the daemon and leaving this
+    # path on the bare length test was finding #6 half-fixed, which is worse
+    # than not fixing it: the daemon's policy check would then pass on a
+    # store built without one.
+    try:
+        from carrier_policy import Policy
+        policy = Policy(op_return_limit=args.op_return_limit)
+    except ImportError as e:
+        sys.exit(f"carrier_policy.py is required beside monetary_store.py: {e}")
+    policy_id = policy.policy_id()
+    print(f"carrier policy  {policy_id}")
+    print("  record this beside C. A commitment without its policy is an")
+    print("  unverifiable number, the same way one without its height is.")
+    print()
+
     print(f"stripping {n_blocks:,} blocks...", flush=True)
 
     try:
@@ -890,7 +1089,7 @@ def main():
 
             raw = bf.read_at(off, size)
             record, st = strip_block(raw, height, args.op_return_limit,
-                                     args.scriptsig_limit)
+                                     args.scriptsig_limit, policy)
 
             if merkle_root(st["txids"]) == st["merkle_root"]:
                 merkle_ok += 1
@@ -925,7 +1124,7 @@ def main():
 
     o, s = tot["original"], tot["stored"]
     dropped = (tot["envelope"] + tot["op_return"] + tot["multisig"]
-               + tot["scriptsig"])
+               + tot.get("pubkey", 0) + tot["scriptsig"])
 
     print()
     print("=" * 66)
@@ -941,6 +1140,7 @@ def main():
     print(f"  inscription witness {human(tot['envelope'])}")
     print(f"  OP_RETURN >limit    {human(tot['op_return'])}")
     print(f"  data multisig       {human(tot['multisig'])}")
+    print(f"  fake-key P2PK       {human(tot.get('pubkey', 0))}")
     print(f"  oversized scriptSig {human(tot['scriptsig'])}")
     print(f"  total               {human(dropped)}")
     print()
@@ -955,12 +1155,54 @@ def main():
     print()
     print("now verifying from disk, reading nothing but the store...")
     ok, bad = verify_store(args.out)
+
+    # Record the policy and the range beside the store, so the daemon can
+    # take it over without anyone asserting which rules produced it. Written
+    # last and only on success: a state file for a store that failed
+    # verification would invite the daemon to append to it.
+    if bad == 0 and merkle_bad == 0:
+        try:
+            with open(os.path.join(args.out, "derived.json"), "w") as fh:
+                # The lifetime totals belong in here, not only in the
+                # daemon's state.json.
+                #
+                # state.json is rewritten by --adopt, and an adopt wiped
+                # the totals on a 975,000-block store: the page went from
+                # "36.6 GiB removed, 6.33% saved" to "245.9 MiB, 9.18%"
+                # overnight, which reads as the store having been rebuilt.
+                # Only this process ever knows the original block sizes —
+                # once the carriers are gone they cannot be recounted from
+                # the store — so if it does not record them here, they are
+                # not recoverable anywhere.
+                json.dump({"policy_id": policy_id,
+                           "op_return_limit": args.op_return_limit,
+                           "scriptsig_limit": args.scriptsig_limit,
+                           "start_height": args.start,
+                           "end_height": args.end,
+                           "records": ok,
+                           "bytes_in": o,
+                           "bytes_out": s,
+                           "carriers": dropped,
+                           "derived": int(time.time())}, fh, indent=1)
+            print()
+            print("wrote derived.json — policy, limits and range")
+        except OSError as e:
+            print(f"\ncould not write derived.json: {e}", file=sys.stderr)
+
     print()
     if bad == 0 and merkle_bad == 0:
         print(f"All {ok:,} blocks were reconstructed from the monetary store")
-        print("alone and verified against their own headers. The store is")
-        print("sufficient: every block remains provably part of the chain")
-        print("with all spam removed.")
+        print("alone and verified against their own headers, and each one")
+        print("extends the block before it.")
+        print()
+        print("What that establishes: the store is sufficient to prove every")
+        print("block is part of this chain with the carriers removed.")
+        print("What it does not: that scripts execute, or that this is the")
+        print("most-work chain. Core did the first when it connected these")
+        print("blocks; chain_check.py answers the second.")
+        print()
+        print(f"policy_id  {policy_id}")
+        print("Publish it beside C.")
 
 
 if __name__ == "__main__":

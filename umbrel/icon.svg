@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"
+     viewBox="0 0 256 256" role="img" aria-label="Bitcoin Monetary Node">
+  <!-- Square corners: umbrelOS rounds the icon in CSS. -->
+  <rect width="256" height="256" fill="#0d0e10"/>
+  <rect x="26" y="26" width="204" height="204" fill="none"
+        stroke="#f7931a" stroke-width="8"/>
+  <g fill="#f7931a">
+    <rect x="43" y="96" width="10" height="10"/>
+    <rect x="53" y="96" width="10" height="10"/>
+    <rect x="63" y="96" width="10" height="10"/>
+    <rect x="73" y="96" width="10" height="10"/>
+    <rect x="43" y="106" width="10" height="10"/>
+    <rect x="83" y="106" width="10" height="10"/>
+    <rect x="43" y="116" width="10" height="10"/>
+    <rect x="83" y="116" width="10" height="10"/>
+    <rect x="43" y="126" width="10" height="10"/>
+    <rect x="53" y="126" width="10" height="10"/>
+    <rect x="63" y="126" width="10" height="10"/>
+    <rect x="73" y="126" width="10" height="10"/>
+    <rect x="43" y="136" width="10" height="10"/>
+    <rect x="83" y="136" width="10" height="10"/>
+    <rect x="43" y="146" width="10" height="10"/>
+    <rect x="83" y="146" width="10" height="10"/>
+    <rect x="43" y="156" width="10" height="10"/>
+    <rect x="53" y="156" width="10" height="10"/>
+    <rect x="63" y="156" width="10" height="10"/>
+    <rect x="73" y="156" width="10" height="10"/>
+    <rect x="103" y="96" width="10" height="10"/>
+    <rect x="143" y="96" width="10" height="10"/>
+    <rect x="103" y="106" width="10" height="10"/>
+    <rect x="113" y="106" width="10" height="10"/>
+    <rect x="133" y="106" width="10" height="10"/>
+    <rect x="143" y="106" width="10" height="10"/>
+    <rect x="103" y="116" width="10" height="10"/>
+    <rect x="123" y="116" width="10" height="10"/>
+    <rect x="143" y="116" width="10" height="10"/>
+    <rect x="103" y="126" width="10" height="10"/>
+    <rect x="143" y="126" width="10" height="10"/>
+    <rect x="103" y="136" width="10" height="10"/>
+    <rect x="143" y="136" width="10" height="10"/>
+    <rect x="103" y="146" width="10" height="10"/>
+    <rect x="143" y="146" width="10" height="10"/>
+    <rect x="103" y="156" width="10" height="10"/>
+    <rect x="143" y="156" width="10" height="10"/>
+    <rect x="163" y="96" width="10" height="10"/>
+    <rect x="203" y="96" width="10" height="10"/>
+    <rect x="163" y="106" width="10" height="10"/>
+    <rect x="173" y="106" width="10" height="10"/>
+    <rect x="203" y="106" width="10" height="10"/>
+    <rect x="163" y="116" width="10" height="10"/>
+    <rect x="183" y="116" width="10" height="10"/>
+    <rect x="203" y="116" width="10" height="10"/>
+    <rect x="163" y="126" width="10" height="10"/>
+    <rect x="193" y="126" width="10" height="10"/>
+    <rect x="203" y="126" width="10" height="10"/>
+    <rect x="163" y="136" width="10" height="10"/>
+    <rect x="203" y="136" width="10" height="10"/>
+    <rect x="163" y="146" width="10" height="10"/>
+    <rect x="203" y="146" width="10" height="10"/>
+    <rect x="163" y="156" width="10" height="10"/>
+    <rect x="203" y="156" width="10" height="10"/>
+  </g>
+  <g fill="#f7931a">
+    <rect x="43" y="188" width="14" height="14"/>
+    <rect x="60" y="188" width="14" height="14"/>
+    <rect x="78" y="189" width="12" height="12" fill="none" stroke="#4a4d55" stroke-width="2"/>
+    <rect x="94" y="188" width="14" height="14"/>
+    <rect x="112" y="189" width="12" height="12" fill="none" stroke="#4a4d55" stroke-width="2"/>
+    <rect x="129" y="189" width="12" height="12" fill="none" stroke="#4a4d55" stroke-width="2"/>
+    <rect x="145" y="188" width="14" height="14"/>
+    <rect x="162" y="188" width="14" height="14"/>
+    <rect x="180" y="189" width="12" height="12" fill="none" stroke="#4a4d55" stroke-width="2"/>
+    <rect x="196" y="188" width="14" height="14"/>
+  </g>
+</svg>

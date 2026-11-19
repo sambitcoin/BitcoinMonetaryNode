@@ -48,6 +48,7 @@ import glob
 import hashlib
 import os
 import struct
+import time
 import sys
 
 STORE_MAGIC = b"MBLK"
@@ -97,7 +98,30 @@ def iter_records(path, verify=True):
             if verify and dsha(body) != digest:
                 raise ValueError(f"{os.path.basename(f)}: body digest mismatch "
                                  f"at {pos} — store is corrupt")
-            block_hash = body[:32]
+
+            # C is computed over the block hash RECOMPUTED FROM THE HEADER,
+            # not over the 32-byte field the record happens to carry.
+            #
+            # The format doc says of that field: "for indexing; not trusted,
+            # recomputed from header". This function trusted it anyway, so C
+            # committed to whatever the store claimed the block hash was
+            # rather than to the proof-of-work. An outside audit caught it.
+            #
+            # The header sits in the same digested body, so recomputing costs
+            # one SHA256d per record and removes the only place a commitment
+            # depended on an untrusted value.
+            if len(body) < 112:
+                raise ValueError(f"{os.path.basename(f)}: record at {pos} is "
+                                 f"too short to hold a header")
+            header = body[32:112]
+            block_hash = dsha(header)
+            if verify and block_hash != body[:32]:
+                raise ValueError(
+                    f"{os.path.basename(f)}: the stored block hash at {pos} "
+                    f"does not match its own header.\n"
+                    f"  stored      {body[:32][::-1].hex()}\n"
+                    f"  recomputed  {block_hash[::-1].hex()}\n"
+                    "The header is authoritative. C is computed from it.")
             yield block_hash, digest
             pos = end
 
@@ -110,10 +134,25 @@ def chain(records, start=GENESIS_C):
         yield block_hash, k, c
 
 
-def compute(path, csv_path=None, verify=True, start=GENESIS_C):
+def compute(path, csv_path=None, verify=True, start=GENESIS_C,
+            progress=20000):
+    """Fold a store into C. Reports progress, because it is slow.
+
+    This reads every byte of the store and SHA256d's every record body. On a
+    675 GB store that is tens of minutes, and it used to print absolutely
+    nothing until it finished — which is indistinguishable from a hang, and
+    was reported as one. A long-running tool that is silent is a broken tool
+    even when the arithmetic is right.
+
+    Progress goes to stderr so `> file` and `| tail` still capture only the
+    result, and it is flushed, because a pipe would otherwise buffer it into
+    the same silence.
+    """
     n = 0
     c = start
     out = None
+    t0 = time.time()
+    total = store_bytes(path)
     if csv_path:
         out = open(csv_path, "w")
         out.write("index,block_hash,K,C\n")
@@ -122,10 +161,46 @@ def compute(path, csv_path=None, verify=True, start=GENESIS_C):
             if out:
                 out.write(f"{n},{block_hash[::-1].hex()},{k.hex()},{c.hex()}\n")
             n += 1
+            if progress and n % progress == 0:
+                el = time.time() - t0
+                rate = n / el if el else 0
+                print(f"  {n:,} records  {el:.0f}s  {rate:.0f} rec/s",
+                      file=sys.stderr, flush=True)
     finally:
         if out:
             out.close()
+    el = time.time() - t0
+    print(f"  read {human(total)} in {el:.0f}s", file=sys.stderr, flush=True)
     return n, c
+
+
+def human(n):
+    """Binary units, labelled as such.
+
+    This project measures storage the way df and du do, in powers of 1024.
+    It used to print those values with decimal labels — "674.7 GB" for a
+    store that is 674.7 GiB and 724.5 GB — and two tools in the same
+    repository disagreed, one dividing by 1024 and one by 1000, both saying
+    GB. Every storage figure this project has published carried that error.
+    Caught when monetary_commit.py read the same store as monetary_store.py
+    and reported a different size.
+
+    Percentages are unaffected: they are ratios of same-base numbers.
+    """
+    x = float(n)
+    for u in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(x) < 1024:
+            return f"{x:,.1f} {u}"
+        x /= 1024
+    return f"{x:,.1f} PiB"
+
+
+def store_bytes(path):
+    try:
+        return sum(os.path.getsize(f)
+                   for f in glob.glob(os.path.join(path, "mblk*.dat")))
+    except OSError:
+        return 0
 
 
 # ---------------------------------------------------------------- self-test
@@ -182,6 +257,69 @@ def selftest():
     d = list(a)
     d[3] = (bytes([99]) * 32, d[3][1])
     check("block hash participates", list(chain(d))[-1][2] != c_a)
+
+    # ------------------------------------------------------------------
+    # The block hash C commits to must come from the header, not from the
+    # record's own 32-byte field. Until an audit caught it, iter_records took
+    # body[:32] at face value — so C committed to whatever the store claimed
+    # rather than to the proof-of-work. These build real records on disk.
+    import tempfile
+
+    def _rec(header, claim=None):
+        body = (claim if claim is not None else dsha(header)) + header
+        return (STORE_MAGIC + struct.pack("<H", STORE_VERSION)
+                + struct.pack("<I", len(body) + 32) + dsha(body) + body)
+
+    hdrs = [struct.pack("<i", 4) + bytes([i]) * 32 + bytes([i + 9]) * 32
+            + struct.pack("<III", 1700000000, 0x1d00ffff, i) for i in range(3)]
+
+    honest_dir = tempfile.mkdtemp(prefix="commit")
+    with open(os.path.join(honest_dir, "mblk00000.dat"), "wb") as fh:
+        for h in hdrs:
+            fh.write(_rec(h))
+    honest = [bh for bh, _k in iter_records(honest_dir)]
+    check("the block hash is derived from the header",
+          honest == [dsha(h) for h in hdrs])
+
+    # Same headers, one record lying about its own block hash. Its digest is
+    # recomputed over the forged body, so digest verification alone passes.
+    forged_dir = tempfile.mkdtemp(prefix="commit")
+    with open(os.path.join(forged_dir, "mblk00000.dat"), "wb") as fh:
+        fh.write(_rec(hdrs[0]))
+        fh.write(_rec(hdrs[1], claim=b"\xee" * 32))
+        fh.write(_rec(hdrs[2]))
+    try:
+        list(iter_records(forged_dir))
+        check("a forged block hash field is rejected", False)
+    except ValueError as e:
+        check("a forged block hash field is rejected",
+              "does not match its own header" in str(e))
+
+    # And with verification off, C must still follow the header rather than
+    # the forgery — otherwise the fix only works when someone asks for it.
+    unver = list(iter_records(forged_dir, verify=False))
+    check("even unverified, C follows the header not the claim",
+          [bh for bh, _k in unver] == [dsha(h) for h in hdrs])
+    # A forged field DOES still change C — through K, the body digest, which
+    # covers the whole body including that field. That is the correct
+    # mechanism and the one the format intends: the merkle root cannot see
+    # the block-hash field, so the body digest must. What the fix removes is
+    # the block hash itself depending on an untrusted value.
+    honest_pairs = list(iter_records(honest_dir))
+    check("a forged field still moves C, via the body digest",
+          list(chain(unver))[-1][2] != list(chain(honest_pairs))[-1][2])
+    check("but the block hash fed into C is the header's, not the claim's",
+          [bh for bh, _k in unver] == [bh for bh, _k in honest_pairs])
+
+    # The real invariant: identical bodies give identical C, whatever the
+    # claimed hash was, because the claim is no longer an input.
+    same_dir = tempfile.mkdtemp(prefix="commit")
+    with open(os.path.join(same_dir, "mblk00000.dat"), "wb") as fh:
+        for h in hdrs:
+            fh.write(_rec(h))
+    check("identical stores still agree on C",
+          list(chain(list(iter_records(same_dir))))[-1][2]
+          == list(chain(honest_pairs))[-1][2])
 
     print()
     if all(ok):

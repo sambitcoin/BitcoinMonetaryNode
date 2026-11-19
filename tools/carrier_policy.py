@@ -317,13 +317,42 @@ class Policy:
                                                self.op_return_limit))
 
     def should_retain(self, script):
-        """Decide a whole scriptPubKey. Non-OP_RETURN scripts are untouched."""
+        """Decide a whole scriptPubKey. Non-OP_RETURN scripts are untouched.
+
+        THIS IS THE AUTHORITATIVE ENTRY POINT, and it differs from classify()
+        by three bytes on purpose.
+
+        Core's standardness test is on the SCRIPT, not the payload:
+        IsStandard compares scriptPubKey.size() against nMaxDatacarrierBytes,
+        default 83. Those 83 bytes are OP_RETURN + OP_PUSHDATA1 + a length
+        byte + 80 bytes of data, which is why the familiar figure for a
+        payload is 80 and the figure for a script is 83.
+
+        classify() only receives a payload, so its size test is payload-based
+        and three bytes looser. That divergence sat unnoticed while nothing
+        called should_retain; wiring the stripper to it surfaced the
+        difference. Callers holding a script must use this method, so the
+        store and Core agree on the same boundary.
+        """
         pushes = op_return_pushes(script)
         if pushes is None:
             return Verdict(True, None, "not an OP_RETURN output")
         payload = b"".join(d for d, _ in pushes)
         strict = len(pushes) == 1 and pushes[0][1]
-        return self.classify(payload, strict_push=strict)
+
+        # A recognised protocol envelope is a payment, and is retained at
+        # whatever size its specification defines.
+        for entry in self.entries:
+            v = entry.match(payload, strict_push=strict)
+            if v is not None:
+                return v
+
+        if len(script) <= self.op_return_limit:
+            return Verdict(True, None, "within OP_RETURN limit",
+                           "%d script bytes" % len(script))
+        return Verdict(False, None, "oversized data carrier",
+                       "%d script bytes, limit %d"
+                       % (len(script), self.op_return_limit))
 
     def describe(self):
         return {"op_return_limit": self.op_return_limit,
@@ -597,8 +626,77 @@ def selftest():
     ck("differs if the length equation changes", a != _mutated_id())
     ck("is a sha256 hex digest", len(a) == 64 and int(a, 16) >= 0)
 
+    print("\nscript vs payload boundary")
+    test_script_vs_payload_boundary(ck)
+
+    print("\nthe stripper actually uses this policy")
+    # The failure this guards against is the one an outside review found:
+    # carrier_policy published a policy_id for weeks while monetary_store
+    # applied a bare length test and never imported it. A hash describing
+    # code that did not run is worse than no hash.
+    import monetary_store as ms
+    p = Policy()
+    big = encode_op_return(b"\x41" * 200)
+    kind_no_policy, _ = ms.classify_output(big, 0, 800000, 83, None)
+    kind_policy, _ = ms.classify_output(big, 0, 800000, 83, p)
+    ck("an oversized carrier is stripped either way",
+       kind_no_policy == "spam" and kind_policy == "spam")
+
+    env = encode_op_return(_envelope())
+    kind_no_policy, _ = ms.classify_output(env, 0, 800000, 83, None)
+    kind_policy, _ = ms.classify_output(env, 0, 800000, 83, p)
+    ck("without the policy an sbtc envelope is wrongly stripped",
+       kind_no_policy == "spam")
+    ck("with the policy it is retained as a payment",
+       kind_policy == "monetary")
+    ck("so the policy demonstrably changes the store it produces",
+       kind_no_policy != kind_policy)
+
+    ck("strip_block accepts and threads a policy",
+       "policy" in ms.strip_block.__code__.co_varnames)
+
     print("\n%d/%d passed" % (sum(ok), len(ok)))
     return 0 if all(ok) else 1
+
+
+def test_script_vs_payload_boundary(ck):
+    """should_retain is on the SCRIPT; classify is on the payload.
+
+    Core's IsStandard compares scriptPubKey.size() against
+    nMaxDatacarrierBytes, so 83 is a script bound and 80 is the matching
+    payload bound. These tests pin the difference so nobody 'fixes' one to
+    agree with the other and silently moves the boundary the published
+    commitment was computed under."""
+    p = Policy()
+
+    exactly_80 = encode_op_return(b"\x41" * 80)
+    ck("an 80-byte payload is an 83-byte script", len(exactly_80) == 83)
+    ck("and it is retained", p.should_retain(exactly_80).retain)
+
+    eighty_one = encode_op_return(b"\x41" * 81)
+    ck("81 bytes of payload makes an 84-byte script",
+       len(eighty_one) == 84)
+    ck("and it is stripped", not p.should_retain(eighty_one).retain)
+    ck("the reason names script bytes",
+       "script bytes" in p.should_retain(eighty_one).detail)
+
+    # The divergence, stated as a test rather than left as a trap.
+    ck("classify alone would still accept 81-83 bytes of payload",
+       p.classify(b"\x41" * 83).retain)
+    ck("should_retain does not, because Core does not",
+       not p.should_retain(encode_op_return(b"\x41" * 83)).retain)
+
+    # A recognised envelope is retained however large, which is the whole
+    # point of the allowlist.
+    env = encode_op_return(_envelope())
+    ck("a Shielded Bitcoin envelope is far over the limit",
+       len(env) > 400)
+    ck("and is retained anyway", p.should_retain(env).retain)
+    ck("named as the protocol that claimed it",
+       p.should_retain(env).protocol is not None)
+
+    ck("a non-OP_RETURN script is never touched",
+       p.should_retain(b"\x00\x14" + b"\x11" * 20).retain)
 
 
 def _mutated_id():

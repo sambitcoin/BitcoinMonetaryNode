@@ -2,10 +2,10 @@
 ======================================================================
 MONETARY NODE — RELEASE CHECK
 ======================================================================
-2026-10-07 16:35:51Z
-root   /Users/neal/src/bmn
-python 3.9.6
-uname  Darwin arm64
+2026-10-07 16:14:34Z
+root   /sessions/peaceful-gifted-gates/mnt/neal/monetary-node
+python 3.10.12
+uname  Linux aarch64
 
 ======================================================================
 FILES
@@ -62,40 +62,23 @@ MANIFEST
 Hash of every tracked file. Paste this beside a release so anyone can
 check they are running what you tested.
 
-  43686108abdd17ae9aa8c2c0d0586ea7088a29bd2ad8b6d7cf6fdd322f18569a  ./archive/init.py
-  b6f766358c1d02b9d8dbd7c218081233f48d428a52057e582b5dc3e16eb3589e  ./archive/inscription_scan.py
-  c79706947cde92a78bb002bcfac597dad31d5a32e563602a51adab1b8d3a62b0  ./archive/LICENSE
-  ea8c0f7a0fb6bd517d2d66c1e89df8fa8625de9d5834a60ee38de7648b8580a9  ./archive/spam_strip.py
-  eff9c12acaacf7813da8247cf8ced26f057c3f99c8554831187dcb25b518c9e7  ./archive/utxo_scan.py
-  06debf4df1c4e245cca16c28836fc11d0e5feba81e0fff13cdd4c3e3553e0f95  ./archive/witness_split.py
+  195939c9831ac2cf03600f15871e9d1d2197fe8286ed25923a8ea73f6413384d  ./INSTALL.md
+  b98ab7271a92fc1f69e23397eabde10d177f81ac0a2a392cc06b547d56496e7e  ./LICENSE
+  798bb9a695eaed21a33350824c4e4f9f288accadbf6ecbcde9e3f05c7a82e529  ./README.md
   1e8415c5933f771bca3359b08353d012dfa20838d42646fd58621fd3c644f4a7  ./deploy.sh
-  086acbd504521e70a9e13e5650e2d423f2c8764352011d7b3c0db95fb0a62ede  ./docs/alpha_warning_snippet.py
-  c28d517768f7fa7dfff661d7535aa8eab2164e2fb82e35cbadb1e9cf5f555ad8  ./docs/BUILD_PLAN.md
-  279766019f31b59063cc49afd5fb442611c60488a7099751dfa8f60c12fed2fd  ./docs/CARRIER_POLICY.md
   a67d4bf1caf7515d4d7ccad757c6020efcaa772a6d8f0f0de1bd633dcb0b1792  ./docs/CARRIERS.md
+  279766019f31b59063cc49afd5fb442611c60488a7099751dfa8f60c12fed2fd  ./docs/CARRIER_POLICY.md
   65a0eb70e4929a317fc3a7db754d86e9076145033dd422770a6ae97c893f25a6  ./docs/CORE_PATCH.md
-  57e8d1bc5f79f2daf5bf597806fb2e4eb6b699cbd2231b8c61c4e6cbc7f7ce9d  ./docs/ELECTRS_PLAN.md
   d42965178fff294ca55167f92421295a7a061b2989b5d6f9119c4489d9d7070d  ./docs/FORMAT_V2.md
-  de9e521215337ac0ae6d5052309d001b9ce1a88bed502e3673622d3d7a900d1e  ./docs/FORMAT.md
-  2a9a810961ef5c1668b98107ee12595ae0362e9e5a476ebf784d82ca78df3180  ./docs/monetary_ibd_design.md
-  d20e70c2ed65fa23de777b8b183145967289591270e6000f5a7111a1f5fa6eac  ./docs/Monetary_Nodes.md
-  e1bd8d62dcd41ffe9669026feeaf7d932dc04f4e3a9a5d24914772c998321f25  ./docs/RESULTS.md
-  76c8bff29e1a86e52bf9e5a98d3d3a35b1904192f5dad789712a892571ed6d80  ./docs/SPAM_TIEBREAK.md
-  037d1db0b3a9e86e32131e0057a869ec5c45637622447995362bfecf5fa060ec  ./docs/STRIP_RESULTS.md
   8cd45c4fa3550b4129bc4424ec1497594a792dc8e6cac9483a88ef32d56e473d  ./docs/USER_AGENT.md
   b1190298469b13723eb28c62b7e2d07ce2bfb9cf898a0fe6df7f4016534a247a  ./electrs_setup.sh
   0e7c3f7b65a922aeb16b03b00b65248844dc2d85736d3454918ed7ac12cfbd88  ./electrum_onion.sh
-  af6c4b21af4d94d69935c7c2c690e08409268852af090a2064eee4eaf488b064  ./GAMEPLAN.md
-  195939c9831ac2cf03600f15871e9d1d2197fe8286ed25923a8ea73f6413384d  ./INSTALL.md
-  452489bf85f909feed1635f6eadfa525cbf87674b616f2e2625719795682f86a  ./install.sh
-  b98ab7271a92fc1f69e23397eabde10d177f81ac0a2a392cc06b547d56496e7e  ./LICENSE
   aae9d4a0154edcf07fb539e495c4568ca67facfdbce2d4869a17de0800adab06  ./node_config.sh
   aa1aea45b35630f643793264a444236883e6d29a908894e55335c9148f63d984  ./patch_build.sh
   743f97d88ee9dac1a67eb051255f1bca7c63f65d3a3c17d4d9f8632a6ebf584d  ./patches/feature_spam_policy.py
   65d18a7a5e88f43ac1df2b1a4134a6bd6ac516c7af431dda5bd694c3351267b1  ./peering_setup.sh
-  0afdae095f3a6b7c27b37eb2333052c857915c134e51036899c060490fc5e329  ./README.md
   1e286de4e2e0deedc8ab47889a6532f339fbd8b2f2bb25f1cf2d09dbd83a38d5  ./release_check.sh
-  419a910e7ed5a9ac173fc118a9388d8f12acc9cb29e630009b442682161a4f9c  ./repo_layout.sh
+  1f49728d7f864e19b6a29f55a698d23645333e681276f1b97bab0d9f4887b0f6  ./repo_layout.sh
   ca61bec3b7ce3b987154dd038d2a5758db456e7f4e3632c40cc59433b81b6d9f  ./services_setup.sh
   2e8559e585aea01e77425145982ddd52d24085404de117f546d3e394a3b7f81e  ./status_onion.sh
   9841b343ed381f42c41c1775c3db79441f3a3fc199c2f40c77a96b649d576b73  ./tools/carrier_policy.py

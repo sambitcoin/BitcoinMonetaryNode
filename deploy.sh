@@ -247,15 +247,31 @@ FAILED=0
 cd "$HERE/tools"
 for t in carrier_policy.py sbtc_scan.py monetary_ui.py quips.py \
          chain_check.py flag_count.py monetary_daemon.py tx_query.py \
-         status_page.py node_settings.py tip_race.py; do
+         status_page.py node_settings.py tip_race.py \
+         monetary_supervisor.py monetary_electrum.py fit_store.py; do
     [ -f "$t" ] || continue
     printf '  %-24s ' "$t"
     if out=$(python3 "$t" --selftest 2>&1); then
-        printf '%s\n' "$(printf '%s' "$out" | grep -Eo '[0-9]+/[0-9]+ passed' \
-                          | tail -1 || echo ok)"
+        # Some suites print "N/N passed" and some print a bare "ok".
+        # The extractor returned empty for the second kind, so three
+        # tools showed a blank result and looked like they had not run.
+        n=$(printf '%s' "$out" | grep -Eo '[0-9]+/[0-9]+ passed' | tail -1)
+        if [ -z "$n" ]; then
+            n=$(printf '%s' "$out" | grep -cE '^PASS ') 
+            [ "$n" -gt 0 ] && n="$n passed" || n="ok"
+        fi
+        printf '%s\n' "$n"
     else
         printf 'FAILED\n'
-        printf '%s\n' "$out" | tail -5 | sed 's/^/        /'
+        # The FAILING checks, not the last five lines. tail -5 showed the
+        # three checks that passed just before the summary, which told you
+        # nothing and cost several rounds of guessing.
+        fails=$(printf '%s\n' "$out" | grep -E '^ *(FAIL|\[FAIL\])' || true)
+        if [ -n "$fails" ]; then
+            printf '%s\n' "$fails" | sed 's/^ */        /'
+        else
+            printf '%s\n' "$out" | tail -12 | sed 's/^/        /'
+        fi
         FAILED=$((FAILED + 1))
     fi
 done

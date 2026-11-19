@@ -1,0 +1,61 @@
+version: "3.7"
+
+# Local test harness — NOT the Umbrel package.
+#
+# Runs the same image against a real Bitcoin Core on the host, so the
+# container can be exercised before umbrelOS is anywhere near it. The Umbrel
+# compose file is docker-compose.yml; this one exists because testing an app
+# only inside the platform it is built for is the wrong order, and because
+# every failure found here is one not found by a stranger.
+#
+#   docker build -f umbrel/Dockerfile -t monetary-node:dev .
+#   docker compose -f umbrel/docker-compose.local.yml up web
+#
+# Then open http://127.0.0.1:8099 — or tunnel it, if the node is remote.
+#
+# DIFFERENCES FROM THE UMBREL PACKAGE, all deliberate:
+#   - no app_proxy, because there is no umbrelOS to proxy through
+#   - host networking, so 127.0.0.1 inside the container is the node
+#   - cookie authentication instead of rpcuser/rpcpassword
+#   - a throwaway data directory, so a test cannot touch the real store
+
+services:
+  web:
+    image: monetary-node:dev
+    command: ["web"]
+    network_mode: host
+    environment:
+      APP_BITCOIN_NODE_IP: "127.0.0.1"
+      APP_BITCOIN_RPC_PORT: "8332"
+      MONETARY_RPC_COOKIE: /bitcoin/.cookie
+      MONETARY_DATA_DIR: /data
+      MONETARY_WEB_PORT: "8099"
+      MONETARY_WEB_HOST: "127.0.0.1"
+      MONETARY_MANAGED_BITCOIN_CONFIG: "1"
+    volumes:
+      - "${HOME}/monetary-docker-test:/data"
+      # Read-only. A test must not be able to write the node's datadir, and
+      # the container runs as uid 1000 so it can read a cookie owned by you.
+      - "${HOME}/.bitcoin:/bitcoin:ro"
+
+  # The daemon, pointed at a THROWAWAY store and a recent start height.
+  #
+  # MONETARY_START_HEIGHT is deliberately not 0 here. A genesis derive is
+  # 675 GiB and eight hours; this is for checking the container works, and a
+  # test that costs a working day will not be run.
+  daemon:
+    image: monetary-node:dev
+    command: ["daemon"]
+    network_mode: host
+    environment:
+      APP_BITCOIN_NODE_IP: "127.0.0.1"
+      APP_BITCOIN_RPC_PORT: "8332"
+      MONETARY_RPC_COOKIE: /bitcoin/.cookie
+      MONETARY_DATA_DIR: /data
+      MONETARY_BITCOIN_DIR: /bitcoin
+      MONETARY_START_HEIGHT: "969000"
+      MONETARY_DEPTH: "6"
+      MONETARY_MIN_FREE_GB: "5"
+    volumes:
+      - "${HOME}/monetary-docker-test:/data"
+      - "${HOME}/.bitcoin:/bitcoin:ro"

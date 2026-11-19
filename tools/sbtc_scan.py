@@ -41,6 +41,7 @@ BSD-2-Clause.
 """
 
 import argparse
+import collections
 import os
 import sys
 import time
@@ -131,13 +132,33 @@ def scan(blocks_dir, start, end, full, cache, progress_every):
     if not new.entries:
         sys.exit("the policy has no entries active — nothing to compare")
 
-    handles = {}
+    # Bounded handle cache.
+    #
+    # This kept every BlockFile it ever opened. Scanning in HEIGHT order
+    # walks across files rather than through them, so after a few hundred
+    # thousand blocks it had opened hundreds of files and then died on
+    # "Too many open files" — at 50% of a 20-minute scan, with the default
+    # ulimit of 1024 and 5,797 block files on disk.
+    #
+    # An LRU of 64 is plenty: height order is locally sequential, so the
+    # working set is one or two files at a time, and reopening on a rare miss
+    # costs nothing against the read itself.
+    HANDLE_MAX = 64
+    handles = collections.OrderedDict()
 
     def read_block(h):
         path, off, size = by_hash[heights[h]]
         bf = handles.get(path)
         if bf is None:
+            while len(handles) >= HANDLE_MAX:
+                _old, old_bf = handles.popitem(last=False)
+                try:
+                    old_bf.close()
+                except OSError:
+                    pass
             bf = handles[path] = ms.BlockFile(path, key)
+        else:
+            handles.move_to_end(path)
         return bf.read_at(off, size)
 
     scanned = candidates = op_returns = oversized = 0

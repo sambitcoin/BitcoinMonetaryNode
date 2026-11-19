@@ -114,10 +114,11 @@ def carrier_bytes(raw, height, op_return_limit=83, scriptsig_limit=1650):
     _, st = strip_block(raw, height, op_return_limit, scriptsig_limit)
     return {
         "carriers": st["envelope"] + st["op_return"] + st["multisig"]
-                    + st["scriptsig"],
+                    + st.get("pubkey", 0) + st["scriptsig"],
         "envelope": st["envelope"],
         "op_return": st["op_return"],
         "multisig": st["multisig"],
+        "pubkey": st.get("pubkey", 0),
         "scriptsig": st["scriptsig"],
         "size": st["original"],
         "txs": len(st["txids"]),
@@ -358,12 +359,26 @@ class Watcher:
 
 
 def human(n):
+    """Binary units, labelled as such.
+
+    This project measures storage the way df and du do, in powers of 1024.
+    It used to print those values with decimal labels — "674.7 GB" for a
+    store that is 674.7 GiB and 724.5 GB — and two tools in the same
+    repository disagreed, one dividing by 1024 and one by 1000, both saying
+    GB. Every storage figure this project has published carried that error.
+    Caught when monetary_commit.py read the same store as monetary_store.py
+    and reported a different size.
+
+    Percentages are unaffected: they are ratios of same-base numbers.
+    """
     if n is None:
         return "?"
-    for unit, size in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
-        if n >= size:
-            return f"{n / size:.1f} {unit}"
-    return f"{n} B"
+    x = float(n)
+    for u in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if abs(x) < 1024:
+            return f"{x:,.1f} {u}"
+        x /= 1024
+    return f"{x:,.1f} PiB"
 
 
 def describe(rec):
@@ -476,7 +491,7 @@ def selftest():
     ck("counts the transaction", m["txs"] == 1)
     ck("uses the same stripper as the store",
        m["carriers"] == (m["envelope"] + m["op_return"] + m["multisig"]
-                         + m["scriptsig"]))
+                         + m["pubkey"] + m["scriptsig"]))
 
     print("\nrecording")
     import tempfile

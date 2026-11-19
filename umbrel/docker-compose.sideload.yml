@@ -1,0 +1,63 @@
+version: "3.7"
+
+# Sideload build: the Monetary Node as a STANDALONE Umbrel app.
+#
+# The shipping package in docker-compose.yml declares `dependencies: [bitcoin]`
+# and takes its RPC credentials, its data directory and its blocks from the
+# Bitcoin app. That is right for the app store and wrong here, for two
+# reasons:
+#
+#   1. This machine runs the `bitcoin-knots` app, not `bitcoin`. The
+#      dependency would go unmet, and the APP_BITCOIN_* variables the
+#      shipping compose interpolates would all be empty.
+#
+#   2. The whole point of this node is that it does not need one. It derives
+#      from block files and serves wallets from its own store; a validating
+#      node is needed to FOLLOW THE TIP, not to answer a wallet.
+#
+# So this runs the dashboard alone, against a store that already exists on
+# the host. No daemon service: without a reachable bitcoind it would crash
+# on a loop and show up in the Umbrel UI as a broken app, which is a worse
+# lie than not running it.
+#
+# PATHS ARE HARDCODED, deliberately. A sideload is for one machine.
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: $APP_MONETARY_NODE_IP
+      APP_PORT: 8080
+
+  web:
+    # Rewritten by sideload.sh to the locally loaded tag.
+    image: monetary-node:0.1.0-alpha
+    restart: on-failure
+    stop_grace_period: 1m
+    command: ["all"]
+    environment:
+      MONETARY_DATA_DIR: /data
+      MONETARY_BITCOIN_DIR: /bitcoin
+      # bitcoind runs INSIDE this container now, supervised, with tor.
+      MONETARY_TOR: "1"
+      MONETARY_PRUNE: "1"
+      MONETARY_WALLET_ADVERTISE: "umbrel.local:50001"
+      # The store was derived from 770,000 because a genesis store does not
+      # fit on this disk. Stated explicitly so the wallet can be served
+      # before the derive finishes writing derived.json.
+      MONETARY_WALLET_START_HEIGHT: "770000"
+    ports:
+      # Electrum protocol, for Sparrow and Electrum on the LAN. Cannot go
+      # behind app_proxy: that speaks HTTP, this is raw TCP.
+      - "50001:50001"
+    volumes:
+      # The app's own scratch space, then the real store bound over the top.
+      # Nested binds are applied in order, so /data/mstore is the host's
+      # store while everything else under /data stays app-local.
+      - "${APP_DATA_DIR}/data:/data"
+      - "/home/umbrel/mstore:/data/mstore"
+      # Read-only, and only so the settings panel can report what the
+      # Bitcoin app configured. The Knots app id, not `bitcoin`.
+      - "/home/umbrel/umbrel/app-data/bitcoin-knots/data/bitcoin:/bitcoin:ro"
+    networks:
+      default:
+        ipv4_address: $APP_MONETARY_NODE_IP

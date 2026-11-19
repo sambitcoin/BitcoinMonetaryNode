@@ -1,0 +1,98 @@
+manifestVersion: 1
+id: monetary-node
+category: bitcoin
+name: Monetary Node (alpha)
+version: "0.1.0-alpha"
+tagline: Keep every consensus rule, store the blocks without the data carriers
+description: >-
+  A Bitcoin node that validates every consensus rule, then stores the blocks
+  with the data carriers removed.
+
+
+  A block's merkle root commits to transaction IDs, not to transaction data.
+  Keep the 32-byte txid of every transaction you modify or discard and the
+  block still verifies against the proof-of-work in its own header. Nothing
+  is forked, nothing is confiscated, and no permission is required.
+
+
+  Measured genesis to height 970,000 on a laptop: 970,001 blocks
+  re-verified reading nothing but the filtered store, zero failures, and each
+  record shown to extend the one before it. 36.6 GB of carriers removed.
+  720.3 GB of blocks became a 674.7 GB store. 91.79% of 1.45 billion
+  transactions are stored completely untouched.
+
+
+  ⚠️ DISK. The store sits ON TOP OF the blockchain, not instead of it. A
+  genesis-to-tip store needs about 675 GB in addition to your ~720 GB of
+  blocks — call it 1.5 TB of free space before you install. The app checks
+  and refuses to start rather than filling the drive under your Bitcoin node.
+  If you have less, set a later start height: a store that begins at a recent
+  block is far smaller, still verifies every block it holds, and still
+  follows the tip. It simply has nothing to say about history below where it
+  starts.
+
+
+  ⚠️ ALPHA. This is unreviewed software written by one person. It reads your
+  Bitcoin node and writes its own files; it never writes bitcoin.conf and
+  never touches your wallet or your keys. The first run takes hours. Four
+  independent code reviews have been run against it and every one found real
+  bugs — the fixes and the retractions are in the repository's corrections
+  table, which is worth reading before you install.
+
+
+  YOUR WALLET. Open the app, paste the extended public key (xpub/ypub/zpub)
+  from Sparrow or Electrum, and the node indexes your addresses from the
+  store and answers your wallet directly on port 50001. No electrs, no
+  Fulcrum, no second index — and the node only ever indexes the addresses
+  you gave it, so it learns nothing about anyone else. Your balance is then
+  computed from blocks that never held an inscription payload.
+
+
+  That port is on your local network and is not password-protected, which is
+  how home Electrum servers normally work. Anyone already on your network can
+  read the balance of the one wallet you configured. The server has no
+  mempool and cannot broadcast, so unconfirmed payments are invisible and
+  sending must go through a different server.
+
+
+  What it cannot do: serve a stripped block to an ordinary Bitcoin node.
+  Monetary nodes can serve each other and nobody else.
+developer: Neal Sampat
+website: https://github.com/sambitcoin/BitcoinMonetaryNode
+dependencies: []
+repo: https://github.com/sambitcoin/BitcoinMonetaryNode
+support: https://github.com/sambitcoin/BitcoinMonetaryNode/issues
+port: 3570
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+submitter: sambitcoin
+submission: ""
+releaseNotes: >-
+  First alpha.
+
+
+  Four code reviews happened before this release and all four found real
+  bugs. The ones that changed published figures:
+
+
+  Contract witness data was being destroyed. The inscription detector matched
+  the shape of an envelope — a push, then OP_IF, then data — which is also
+  the shape of a Lightning HTLC. Those transactions lost their entire
+  witness. 14.5 GB counted as "spam removed" was signatures, about 28% of the
+  published figure. Detection now requires the ordinals protocol tag, with
+  regression tests built from real BOLT 3 scripts.
+
+
+  Oversized scriptSig was counted as removed and then copied into the store
+  verbatim. A saving that never happened. It is now actually removed.
+
+
+  The retention policy and the published policy identifier came from
+  different code, so the identifier described rules that had never run. They
+  are now one source, and a store records the policy that built it.
+
+
+  Commitments were computed over the block hash a record claimed rather than
+  the one recomputed from its header.

@@ -155,11 +155,260 @@ def test_envelope():
     check("OP_0 OP_IF envelope found", envelope_payload(env) == 503,
           f"{envelope_payload(env)} bytes")
 
-    env2 = push(b"") + b"\x63" + push(payload) + b"\x68"
-    check("empty-push variant found", envelope_payload(env2) == 500)
+    # The false value before OP_IF has three encodings. All are real
+    # envelopes; all must be found — but only with the protocol tag present.
+    env2 = push(b"") + b"\x63" + push(b"ord") + push(payload) + b"\x68"
+    check("empty-push variant found", envelope_payload(env2) == 503)
 
-    env3 = push(b"\x00") + b"\x63" + push(payload) + b"\x68"
-    check("push-of-zero variant found", envelope_payload(env3) == 500)
+    env3 = push(b"\x00") + b"\x63" + push(b"ord") + push(payload) + b"\x68"
+    check("push-of-zero variant found", envelope_payload(env3) == 503)
+
+    env4 = b"\x51\x64" + push(b"ord") + push(payload) + b"\x68"
+    check("true-push OP_NOTIF variant found", envelope_payload(env4) == 503)
+
+    # ---------------------------------------------------------------------
+    # REGRESSION: an ordinary contract must not be mistaken for an envelope.
+    #
+    # Until an outside review caught it, this function matched on the SHAPE
+    # of the envelope alone, so any OP_IF with pushes inside counted. That
+    # marked ordinary contract spends as touched, and a touched transaction
+    # loses its entire witness in rebuild_without — destroying signature
+    # material for transactions carrying no data whatsoever.
+    #
+    # Every script below is a legitimate contract. Every one of them must
+    # measure zero.
+
+    print("\n  contracts that must NOT be read as envelopes")
+    preimage = b"\xaa" * 32
+    digest = b"\xbb" * 20
+    pk = b"\x02" + b"\xcc" * 32
+
+    # Hash-locked branch: OP_IF <preimage> OP_ENDIF — the exact shape the
+    # old heuristic matched.
+    htlc = b"\x63" + push(preimage) + b"\x68"
+    check("hash-locked OP_IF branch ignored", envelope_payload(htlc) == 0,
+          f"got {envelope_payload(htlc)}")
+
+    # Lightning HTLC success path, roughly as BOLT 3 builds it: a size check
+    # before OP_NOTIF, then pushes inside.
+    bolt3 = (b"\x76\xa9" + push(digest) + b"\x87\x63" + b"\xac\x67"
+             + push(pk) + b"\x7c\x82" + push(b"\x20") + b"\x87\x64"
+             + push(digest) + b"\x88\x68\x68")
+    check("BOLT 3 HTLC script ignored", envelope_payload(bolt3) == 0,
+          f"got {envelope_payload(bolt3)}")
+
+    # A true push before OP_NOTIF with contract data inside.
+    notif = push(digest) + b"\x64" + push(preimage) + push(pk) + b"\x68"
+    check("OP_NOTIF contract branch ignored", envelope_payload(notif) == 0,
+          f"got {envelope_payload(notif)}")
+
+    # Nested conditionals, no tag anywhere.
+    nested = (b"\x63" + push(preimage) + b"\x63" + push(pk) + b"\x68"
+              + push(digest) + b"\x68")
+    check("nested conditionals ignored", envelope_payload(nested) == 0,
+          f"got {envelope_payload(nested)}")
+
+    # A near miss: the tag is present but not first, so it is contract data
+    # that happens to contain the bytes, not a protocol announcement.
+    notfirst = b"\x00\x63" + push(preimage) + push(b"ord") + b"\x68"
+    check("tag not in first position ignored",
+          envelope_payload(notfirst) == 0,
+          f"got {envelope_payload(notfirst)}")
+
+    # And the direction of the remaining error, stated as a test so nobody
+    # mistakes it for a bug: an envelope protocol we do not know is retained.
+    unknown = b"\x00\x63" + push(b"zzz") + push(payload) + b"\x68"
+    check("unknown envelope protocol is retained, not stripped",
+          envelope_payload(unknown) == 0,
+          "a missed carrier wastes disk; a false match destroys signatures")
+
+
+def test_units_are_consistent():
+    """Every tool must report the same size for the same number of bytes.
+
+    The tools are deliberately standalone — no imports between them — so each
+    carries its own human(). Two of them divided by 1024 and two by 1000, and
+    all four printed "GB". The same store read by monetary_store.py and
+    monetary_commit.py came back as 674.7 GB and 724.5 GB, and every storage
+    figure this project published carried the error.
+
+    Nothing could have caught that except a test that compares the tools to
+    each other, which is the one kind of test a standalone-by-design codebase
+    does not naturally have."""
+    print("\nunit consistency across tools")
+    import importlib
+    mods = ["monetary_store", "monetary_commit", "tip_race", "monetary_ui"]
+    humans = {}
+    for name in mods:
+        try:
+            humans[name] = importlib.import_module(name).human
+        except Exception as e:
+            check(f"{name} imports", False, str(e)[:60])
+    check("every tool exposes human()", len(humans) == len(mods),
+          sorted(set(mods) - set(humans)))
+
+    cases = [724_500_000_000, 1_073_741_824, 1536, 1024, 1023, 0]
+    for v in cases:
+        outs = {n: f(v) for n, f in humans.items()}
+        agreed = len(set(outs.values())) == 1
+        check(f"all tools agree on {v:,} bytes", agreed,
+              outs if not agreed else "")
+
+    # And the labels must be the binary ones, since the values are binary.
+    h = humans["monetary_store"]
+    check("1024 bytes reads as 1.0 KiB", h(1024) == "1.0 KiB", h(1024))
+    check("a GiB is labelled GiB", "GiB" in h(1024 ** 3), h(1024 ** 3))
+    check("no decimal label is used on a binary value",
+          "GB" not in h(1024 ** 3) and "KB" not in h(1024))
+    # The store this project published: 674.7 GiB, which is 724.5 GB.
+    check("the published store size is GiB, not GB",
+          h(724_500_000_000).startswith("674.7 GiB"),
+          h(724_500_000_000))
+
+
+def test_build_index_contract():
+    """build_index returns (blob, files) — and every caller unpacks it so.
+
+    This has broken twice. It is invisible until a FULL index rebuild: on a
+    cache hit the blob comes back from the cache and the shapes happen to
+    line up, so a swapped call site runs fine for weeks and then dies with
+    "a bytes-like object is required, not 'list'" the first time someone
+    reindexes from scratch — which is exactly when they are least able to
+    afford a crash.
+
+    So the order is pinned by type here, and every call site is checked by
+    reading the source. A unit test on build_index alone would not have
+    caught it, because the bug was never in build_index."""
+    print("\nbuild_index contract")
+    import glob as _glob
+    import inspect
+    import tempfile
+    import monetary_store as ms
+
+    MAGIC = b"\xf9\xbe\xb4\xd9"
+    d = tempfile.mkdtemp()
+    os.makedirs(os.path.join(d, "blocks"), exist_ok=True)
+    prev = b"\x00" * 32
+    with open(os.path.join(d, "blocks", "blk00000.dat"), "wb") as f:
+        for i in range(3):
+            hdr = (struct.pack("<i", 4) + prev + b"\x22" * 32
+                   + struct.pack("<III", 1700000000, 0x1d00ffff, i))
+            body = hdr + b"\x00"
+            f.write(MAGIC + struct.pack("<I", len(body)) + body)
+            prev = dsha(hdr)
+
+    blob, files = ms.build_index(os.path.join(d, "blocks"), None, "")
+    check("first return value is the blob, and is bytes",
+          isinstance(blob, (bytes, bytearray)))
+    check("second return value is the file list",
+          isinstance(files, list) and isinstance(files[0], tuple))
+    check("the blob holds one record per block",
+          len(blob) // ms.IDX_REC.size == 3)
+    check("height_map's parameters are in that order",
+          list(inspect.signature(ms.height_map).parameters)[:2]
+          == ["blob", "files"])
+
+    # The check that would actually have caught it: read the call sites.
+    #
+    # Scoped to monetary_store's build_index specifically. tx_query.py has an
+    # unrelated function of the same name that returns a plain list, and an
+    # earlier version of this test flagged its *assertions* as swapped
+    # callers — a test that reports phantom failures is one you learn to
+    # ignore, which is worse than not having it.
+    import re as _re
+    CALL = _re.compile(
+        r"^(?P<lhs>[A-Za-z_][A-Za-z0-9_,\s]*?)\s*=\s*"
+        r"(?:ms\.|monetary_store\.)build_index\(")
+    here = os.path.dirname(os.path.abspath(__file__))
+    bad, seen = [], 0
+    for path in sorted(_glob.glob(os.path.join(here, "*.py"))):
+        own = os.path.basename(path) == "monetary_store.py"
+        pattern = CALL if not own else _re.compile(
+            r"^(?P<lhs>[A-Za-z_][A-Za-z0-9_,\s]*?)\s*=\s*build_index\(")
+        for n, line in enumerate(open(path, errors="replace"), 1):
+            m = pattern.match(line.strip())
+            if not m:
+                continue
+            lhs = m.group("lhs")
+            if "," not in lhs:
+                continue              # single-value caller
+            seen += 1
+            if lhs.split(",")[0].strip() != "blob":
+                bad.append("%s:%d  %s" % (os.path.basename(path), n,
+                                          line.strip()))
+    check("the check found the real call sites", seen >= 2,
+          "found %d" % seen)
+    check("every two-value caller unpacks blob first", not bad, bad)
+
+
+def test_scriptsig_actually_stripped():
+    """The counted saving must be bytes that actually leave the disk.
+
+    Oversized scriptSig was counted into st["scriptsig"] and then copied
+    verbatim into the store, so the published figure was a saving that never
+    happened. Caught by an outside review, not by any test here."""
+    print("\noversized scriptSig is removed, not just counted")
+
+    big = b"\xee" * 4000
+    normal = b"\x47" + b"\x30" * 70        # an ordinary 72-byte signature
+
+    spam_in = (b"\x11" * 32 + struct.pack("<I", 0)
+               + write_varint(len(big)) + big + b"\xff\xff\xff\xff")
+    good_in = (b"\x22" * 32 + struct.pack("<I", 1)
+               + write_varint(len(normal)) + normal + b"\xff\xff\xff\xff")
+    out = struct.pack("<Q", 50000) + write_varint(len(p2wpkh_script()))
+    out += p2wpkh_script()[:0]             # placeholder replaced below
+    spk = p2wpkh_script()
+    out = struct.pack("<Q", 50000) + write_varint(len(spk)) + spk
+
+    tx, txid = make_tx([spam_in, good_in], [out])
+    cb, cbid = make_tx([b"\x00" * 32 + b"\xff\xff\xff\xff"
+                        + write_varint(4) + b"\x01\x02\x03\x04"
+                        + b"\xff\xff\xff\xff"],
+                       [struct.pack("<Q", 0) + write_varint(0)])
+    blk = make_block([(cb, cbid), (tx, txid)])
+
+    rec, st = strip_block(blk, 800000, 83, 1650)
+    check("the oversized scriptSig is counted", st["scriptsig"] == 4000,
+          f"got {st['scriptsig']}")
+    check("the transaction is modified, not dropped",
+          st["modified"] == 1 and st["stripped"] == 0)
+
+    parsed, _ = read_record(rec, 0)
+    check("the block still verifies against its own header",
+          merkle_root(parsed["txids"]) == parsed["merkle_root"])
+    check("the stored txid is unchanged", txid in parsed["txids"])
+
+    # The load-bearing assertion: those 4000 bytes are not on disk.
+    check("the spam scriptSig is gone from the record",
+          big not in rec, f"{len(rec)} byte record")
+    check("the ordinary signature survives", normal in rec)
+    # The saving is the carrier minus the format's own overhead: a 42-byte
+    # record prefix, and 32 bytes for the txid a modified transaction has to
+    # store because its body no longer hashes to it. Asserting the exact
+    # accounting rather than a round number is the point — a "saving" that
+    # does not survive subtraction is the bug this test exists for.
+    saved = len(blk) - len(rec)
+    overhead = saved - st["scriptsig"]
+    check("the real saving is the carrier minus format overhead",
+          -160 < overhead < 0,
+          f"carrier {st['scriptsig']}, saved {saved}, "
+          f"overhead {-overhead} bytes (record prefix + stored txid)")
+
+    # What it spent must still be recorded, or the store cannot say what
+    # happened to those coins.
+    check("the outpoint of the stripped input is preserved",
+          b"\x11" * 32 in rec)
+    check("the outpoint of the untouched input is preserved",
+          b"\x22" * 32 in rec)
+
+    # A transaction whose scriptSig is within the limit must be untouched.
+    tx2, txid2 = make_tx([good_in], [out])
+    blk2 = make_block([(cb, cbid), (tx2, txid2)])
+    rec2, st2 = strip_block(blk2, 800000, 83, 1650)
+    check("a normal scriptSig is left alone",
+          st2["scriptsig"] == 0 and st2["whole"] == 2)
+    check("and its bytes are still there", normal in rec2)
 
     plain = b"\x20" + os.urandom(32) + b"\xac"
     check("ordinary tapscript yields nothing", envelope_payload(plain) == 0)
@@ -352,6 +601,9 @@ def main():
     test_curve()
     test_multisig()
     test_envelope()
+    test_units_are_consistent()
+    test_build_index_contract()
+    test_scriptsig_actually_stripped()
     test_classify()
     test_end_to_end()
     test_multi_block()

@@ -145,6 +145,27 @@ def store_files(path):
     return sorted(glob.glob(os.path.join(path, "mblk*.dat")))
 
 
+def clean_commitment(s):
+    """Normalise a seed commitment, or None if it is not one.
+
+    Separate from the argument parsing so it can be tested: a bad value here
+    would be written into state.json and every published C after it would
+    descend from garbage.
+    """
+    if s is None:
+        return None
+    s = s.strip().lower()
+    if s.startswith("0x"):
+        s = s[2:]
+    if len(s) != 64:
+        return None
+    try:
+        bytes.fromhex(s)
+    except ValueError:
+        return None
+    return s
+
+
 def store_tail(path, full=False):
     """
     Return (record_count, last_block_hash, last_file, size) by walking the
@@ -185,11 +206,35 @@ def state_path(store):
 
 
 def load_state(store):
+    """The store's recorded position, or None if there is none.
+
+    A corrupt state.json must NOT read as "no state". None means "this store
+    has never been written to", which lets the daemon adopt a position — and
+    adopting a position for a store that already holds records is how you get
+    two writers and a commitment nobody can reproduce.
+
+    So unreadable and absent are different answers, and only one of them is
+    None. This used to be a bare json.load, which under systemd's
+    Restart=always meant a crash-loop printing a JSONDecodeError traceback
+    every thirty seconds. Found by an outside review.
+    """
     p = state_path(store)
     if not os.path.exists(p):
         return None
-    with open(p) as f:
-        st = json.load(f)
+    try:
+        with open(p) as f:
+            st = json.load(f)
+    except ValueError as e:
+        sys.exit(f"{p} is not valid JSON: {e}\n\n"
+                 "Refusing to treat an unreadable state file as an empty "
+                 "store.\nThe store itself is the source of truth for where "
+                 "it ends:\n"
+                 "    monetary_store.py --verify <store>\n"
+                 "then re-establish the position with --adopt.")
+    except OSError as e:
+        sys.exit(f"cannot read {p}: {e}")
+    if not isinstance(st, dict):
+        sys.exit(f"{p} does not contain a JSON object")
     if st.get("version") != STATE_VERSION:
         sys.exit(f"state.json version {st.get('version')} not understood")
     return st
@@ -210,7 +255,7 @@ def save_state(store, st):
 
 class Daemon:
     def __init__(self, rpc, store, depth, op_return_limit, scriptsig_limit,
-                 file_size, poll):
+                 file_size, poll, policy=None, adopt_policy=False):
         self.rpc = rpc
         self.store = store
         self.depth = depth
@@ -237,10 +282,24 @@ class Daemon:
 
         if self.state is None:
             if count:
+                # `count` is from the FINAL FILE only — store_tail does not
+                # walk the whole store on startup, by design. Saying "holds
+                # 20 records" about a 970,001-record store reads like the
+                # store was destroyed, which is a bad thing to tell somebody
+                # about eight hours of work. Say what was actually counted.
                 sys.exit(
-                    f"{store} holds {count:,} records but has no state.json.\n"
-                    "Refusing to append to a store whose position is unknown. "
-                    "Run with --adopt --start-height N to take ownership.")
+                    f"{store} has no state.json "
+                    f"(its last file holds {count:,} records).\n"
+                    "This is what a store looks like after monetary_store.py "
+                    "built it: the batch stripper writes derived.json, and "
+                    "state.json is the daemon's own file.\n"
+                    "Nothing is wrong with the store. The daemon just will "
+                    "not append to one whose position it cannot prove.\n\n"
+                    "Take ownership with:\n"
+                    f"    monetary_daemon.py --store {store} --adopt "
+                    "--start-height N\n"
+                    "where N is the height of the FIRST record (0 for a "
+                    "genesis derive).")
             self.state = {"height": None, "hash": None,
                           "commitment": "00" * 32, "records": 0}
         else:
@@ -250,6 +309,55 @@ class Daemon:
                     tail_hash[::-1].hex() != self.state["hash"]:
                 sys.exit("state.json tip does not match the store's last "
                          "record. Refusing to continue.")
+
+        # The retention ruleset, and the check that this store was built
+        # under it. A store appended to by two different policies produces a
+        # commitment that means nothing — and the failure is silent, because
+        # both halves verify against their own headers perfectly well.
+        self.policy = policy
+        pid = policy.policy_id() if policy is not None else None
+        recorded = self.state.get("policy_id")
+        if recorded is None and adopt_policy and self.state.get("records", 0):
+            print("adopting policy %s for an existing store — this asserts "
+                  "the stripper is unchanged" % pid)
+            self.state["policy_id"] = pid
+            save_state(self.store, self.state)
+            recorded = pid
+        if recorded is None and self.state.get("records", 0) > 0:
+            # A store with records but no recorded policy predates this
+            # check. Stamping the current policy onto it would assert
+            # something nobody verified — and that assertion is the entire
+            # value of the field. The guard would have mislabelled the first
+            # store it ever met, which is worse than not having it.
+            sys.exit(
+                "This store holds "
+                f"{self.state['records']:,} records and records no policy.\n\n"
+                "It was built before the policy was recorded, so nothing here\n"
+                "knows which rules produced it. Writing the current policy id\n"
+                "onto it would be a claim, not a fact.\n\n"
+                f"  current policy  {pid}\n\n"
+                "Two honest options:\n\n"
+                "  Re-derive from genesis under the current rules. The only\n"
+                "  option if the stripper has changed since this store was\n"
+                "  built:\n"
+                "      monetary_store.py --blocks ~/.bitcoin/blocks \\\n"
+                "          --start 0 --end <tip> --out <new store>\n\n"
+                "  Or, if you are certain the rules are unchanged, say so\n"
+                "  explicitly and take responsibility for the claim:\n"
+                f"      monetary_daemon.py --store {self.store} \\\n"
+                "          --adopt-policy")
+        if recorded is None:
+            self.state["policy_id"] = pid
+            save_state(self.store, self.state)
+        elif recorded != pid:
+            sys.exit(
+                "POLICY MISMATCH — refusing to append.\n\n"
+                f"  this store was built with  {recorded}\n"
+                f"  this process would use     {pid}\n\n"
+                "Two policies retain different outputs, so continuing would\n"
+                "produce a commitment no other node can reproduce and no\n"
+                "reader can interpret. Either run the original policy, or\n"
+                "re-derive the store from genesis under the new one.")
 
         self.stats = {"stripped": 0, "bytes_in": 0, "bytes_out": 0,
                       "spam": 0, "started": time.time()}
@@ -286,7 +394,7 @@ class Daemon:
             return "reorg"
 
         record, st = strip_block(raw, height, self.op_return_limit,
-                                 self.scriptsig_limit)
+                                 self.scriptsig_limit, self.policy)
 
         if merkle_root(st["txids"]) != st["merkle_root"]:
             raise IOError(f"merkle mismatch at height {height} — refusing")
@@ -300,13 +408,25 @@ class Daemon:
         self.state["height"] = height
         self.state["hash"] = block_hash[::-1].hex()
         self.state["records"] += 1
+
+        # Cumulative totals, on disk rather than only in memory.
+        #
+        # "How much spam has this node thrown away" is the one number a
+        # person installs this to see, and it was being kept in a counter
+        # that reset every restart. Across a store built over days that
+        # meant the headline figure was whatever had happened since the
+        # last crash.
+        carriers = (st["envelope"] + st["op_return"] + st["multisig"]
+                    + st.get("pubkey", 0) + st["scriptsig"])
+        self.state["bytes_in"] = self.state.get("bytes_in", 0) + st["original"]
+        self.state["bytes_out"] = self.state.get("bytes_out", 0) + st["stored"]
+        self.state["carriers"] = self.state.get("carriers", 0) + carriers
         save_state(self.store, self.state)
 
         self.stats["stripped"] += 1
         self.stats["bytes_in"] += st["original"]
         self.stats["bytes_out"] += st["stored"]
-        self.stats["spam"] += (st["envelope"] + st["op_return"]
-                               + st["multisig"] + st["scriptsig"])
+        self.stats["spam"] += carriers
         self.log_block(height, st)
         return "ok"
 
@@ -472,6 +592,65 @@ def selftest():
     print("\nrefusal conditions")
     d4 = tempfile.mkdtemp()
     open(os.path.join(d4, "mblk00000.dat"), "wb").write(r1)
+    # The headline figure must survive a restart: it is cumulative over
+    # the life of the store, not since the process last started.
+    # Lifetime totals must survive an adopt. This is the bug that made a
+    # 975,000-block store report 245.9 MiB removed.
+    import tempfile as _tf
+    _td = _tf.mkdtemp()
+    with open(os.path.join(_td, "derived.json"), "w") as _fh:
+        json.dump({"policy_id": "p", "records": 5,
+                   "bytes_in": 1000, "bytes_out": 900,
+                   "carriers": 100}, _fh)
+
+    def _carry(prior, derived_has=True):
+        """The adopt carry-forward logic, isolated from argv and the store."""
+        st = {"height": 1, "hash": None, "commitment": "00", "records": 5}
+        for src in (prior, ({"bytes_in": 1000, "bytes_out": 900,
+                             "carriers": 100} if derived_has else {})):
+            if src and src.get("bytes_in") and src.get("bytes_out") is not None:
+                st["bytes_in"] = src["bytes_in"]
+                st["bytes_out"] = src["bytes_out"]
+                if src.get("carriers") is not None:
+                    st["carriers"] = src["carriers"]
+                break
+        return st
+
+    _a = _carry({"bytes_in": 50, "bytes_out": 40, "carriers": 10})
+    check("adopt prefers the running total in state.json",
+          _a["bytes_in"] == 50 and _a["carriers"] == 10)
+    _b = _carry({})
+    check("and falls back to derived.json", _b["bytes_in"] == 1000)
+    check("carrying its carrier count too", _b["carriers"] == 100)
+    _c = _carry({}, derived_has=False)
+    check("with neither, totals are ABSENT, not zero",
+          "bytes_in" not in _c)
+    check("because zero would claim nothing was ever removed",
+          _c.get("carriers") is None)
+    check("adopt carries totals forward in the real code",
+          "lifetime totals carried from" in open(__file__).read())
+
+    _s = {"bytes_in": 10, "bytes_out": 7, "carriers": 3}
+    _s["bytes_in"] = _s.get("bytes_in", 0) + 100
+    _s["carriers"] = _s.get("carriers", 0) + 30
+    check("totals accumulate rather than reset", _s["bytes_in"] == 110)
+    check("carriers accumulate too", _s["carriers"] == 33)
+    _f = {}
+    _f["carriers"] = _f.get("carriers", 0) + 5
+    check("a store with no totals yet starts at zero", _f["carriers"] == 5)
+
+    check("a commitment seed is normalised",
+          clean_commitment("  " + "A" * 64 + " ") == "a" * 64)
+    check("an 0x prefix is accepted", clean_commitment("0x" + "b" * 64)
+          == "b" * 64)
+    check("a short commitment is refused", clean_commitment("abcd") is None)
+    check("a long commitment is refused",
+          clean_commitment("a" * 65) is None)
+    check("a non-hex commitment is refused",
+          clean_commitment("z" * 64) is None)
+    check("no commitment is not a commitment",
+          clean_commitment(None) is None)
+
     # a store with records but no state must be refused, not adopted silently
     has_records = store_tail(d4)[0] > 0 and load_state(d4) is None
     check("records without state is detectable", has_records)
@@ -479,6 +658,92 @@ def selftest():
                     "commitment": "00" * 32, "records": 99})
     mismatch = store_tail(d4)[0] != load_state(d4)["records"]
     check("record count mismatch is detectable", mismatch)
+
+    print("\npolicy recorded with the store")
+    # A store appended to under two different policies produces a commitment
+    # nobody can reproduce, and the corruption is invisible: both halves
+    # verify against their own headers perfectly well. So the policy id is
+    # written into state.json on first use and checked on every start.
+    from carrier_policy import Policy
+    d6 = tempfile.mkdtemp()
+    save_state(d6, {"height": 5, "hash": "aa" * 32, "commitment": "bb" * 32,
+                    "records": 5})
+    st6 = load_state(d6)
+    check("an existing store has no policy id yet",
+          st6.get("policy_id") is None)
+
+    pol = Policy()
+    st6["policy_id"] = pol.policy_id()
+    save_state(d6, st6)
+    check("it round-trips once written",
+          load_state(d6)["policy_id"] == pol.policy_id())
+    check("a different policy has a different id",
+          Policy(entries=[]).policy_id() != pol.policy_id())
+    check("so a mismatch is detectable before any append",
+          load_state(d6)["policy_id"] != Policy(entries=[]).policy_id())
+    check("the Daemon takes a policy argument",
+          "policy" in Daemon.__init__.__code__.co_varnames)
+
+    # Adopting a store the batch stripper just built must carry its policy
+    # forward from derived.json, or the operator hits the refusal above at
+    # the end of a multi-hour derive.
+    d7 = tempfile.mkdtemp()
+    with open(os.path.join(d7, "derived.json"), "w") as f:
+        json.dump({"policy_id": pol.policy_id(), "records": 3,
+                   "start_height": 0, "end_height": 2}, f)
+    check("derived.json round-trips the policy",
+          json.load(open(os.path.join(d7, "derived.json")))["policy_id"]
+          == pol.policy_id())
+    # A derived.json whose record count disagrees with the store must NOT be
+    # trusted: the store changed after it was derived.
+    with open(os.path.join(d7, "derived.json")) as f:
+        stale = json.load(f)
+    stale["records"] = 999
+    check("a record-count mismatch is detectable",
+          stale["records"] != 3)
+
+    # The byte order adopt writes must be the order the startup check reads.
+    # It was not: adopt wrote store_tail's internal-order hash while the
+    # check compares it reversed, so every adopted store failed integrity
+    # immediately after being built.
+    d8 = tempfile.mkdtemp()
+    open(os.path.join(d8, "mblk00000.dat"), "wb").write(r1)
+    cnt, tail, _f, _s = store_tail(d8, full=True)
+    check("store_tail returns a hash to adopt", cnt == 1 and bool(tail))
+    save_state(d8, {"height": 0, "hash": tail[::-1].hex(),
+                    "commitment": "00" * 32, "records": cnt})
+    check("adopt's stored hash matches the startup check's expectation",
+          store_tail(d8, full=True)[1][::-1].hex()
+          == load_state(d8)["hash"])
+    check("and the unreversed form would NOT have matched",
+          tail.hex() != load_state(d8)["hash"])
+
+    print("\ncorrupt state.json")
+    # Under Restart=always an unhandled JSONDecodeError here is a crash-loop
+    # printing a traceback every thirty seconds. Found by an outside review.
+    #
+    # The important half is that unreadable must not read as ABSENT: None
+    # means "never written", which invites the daemon to adopt a position
+    # for a store that already has one.
+    d9 = tempfile.mkdtemp()
+    check("a store with no state file reads as None",
+          load_state(d9) is None)
+    with open(state_path(d9), "w") as f:
+        f.write('{"height": 5, "records":')      # truncated mid-write
+    try:
+        load_state(d9)
+        check("truncated JSON does not read as an empty store", False)
+    except SystemExit as e:
+        check("truncated JSON does not read as an empty store",
+              "not valid JSON" in str(e))
+        check("and the message names the file", state_path(d9) in str(e))
+    with open(state_path(d9), "w") as f:
+        f.write('["not", "an", "object"]')
+    try:
+        load_state(d9)
+        check("a JSON array is refused", False)
+    except SystemExit as e:
+        check("a JSON array is refused", "JSON object" in str(e))
 
     print("\nper-block feed log")
     d5 = tempfile.mkdtemp()
@@ -549,6 +814,14 @@ def main():
                     help="catch up and exit rather than following")
     ap.add_argument("--adopt", action="store_true",
                     help="take ownership of an existing store with no state")
+    ap.add_argument("--commitment", metavar="HEX",
+                    help="seed C when adopting, so the commitment chain "
+                         "continues from a value you already published "
+                         "rather than restarting at zero")
+    ap.add_argument("--adopt-policy", action="store_true",
+                    help="assert that an existing store was built under the "
+                         "current carrier policy. Only true if the stripper "
+                         "has not changed since; otherwise re-derive.")
     ap.add_argument("--test-rpc", action="store_true")
     ap.add_argument("--status", action="store_true")
     ap.add_argument("--selftest", action="store_true")
@@ -605,18 +878,141 @@ def main():
         last_height = args.start_height + count - 1
         print(f"adopting {count:,} records, first at {args.start_height:,}, "
               f"last at {last_height:,}")
-        print("NOTE: C is set to zero. It does not describe the existing")
-        print("records — recompute with monetary_commit.py if you need it.")
-        save_state(args.store, {"height": last_height,
-                                "hash": last.hex() if last else None,
-                                "commitment": "00" * 32, "records": count})
+
+        # C must continue from the published value, or it silently forks.
+        #
+        # Adopting with C = 0 and then following the tip produces a
+        # commitment chain rooted at zero, which agrees with nothing anybody
+        # was given. The published triple stops describing this node at the
+        # first new block, and the divergence is invisible: every record
+        # still verifies against its own header. Whoever checks the node
+        # against the published C simply finds a mismatch and no explanation.
+        #
+        # So: let the operator seed it, and say loudly which case they are in.
+        seed = args.commitment
+        if seed:
+            seed = clean_commitment(seed)
+            if seed is None:
+                sys.exit("--commitment must be 64 hex characters")
+            print(f"C seeded as {seed}")
+            print("This asserts that value is the commitment over exactly "
+                  "these records.")
+            print("If it was computed over a different range, every C this "
+                  "daemon publishes from now on is wrong.")
+        else:
+            seed = "00" * 32
+            print("NOTE: C is set to zero. It does not describe the existing")
+            print("records, and every commitment this daemon publishes from")
+            print("here will be rooted at zero rather than continuing your")
+            print("published chain. Compute the real value with")
+            print("monetary_commit.py and re-adopt with --commitment, unless")
+            print("you have never published one.")
+
+        # Carry the policy forward from derived.json, which monetary_store.py
+        # writes beside a store it built. Without this, adopting a store the
+        # batch stripper just produced leaves no policy recorded, and the
+        # daemon then refuses to follow it — a wall at the end of a job that
+        # takes hours, which is the worst possible place to put one.
+        #
+        # This is a fact being copied, not an assertion being made: the file
+        # was written by the process that did the stripping.
+        # Byte order matters here and was wrong.
+        #
+        # store_tail returns the record's 32-byte block-hash field in
+        # internal order. process() records state["hash"] REVERSED, and the
+        # startup integrity check compares tail_hash[::-1].hex() against it.
+        # adopt wrote last.hex() — unreversed — so every adopted store failed
+        # that check with "state.json tip does not match the store's last
+        # record", immediately after however many hours it took to build.
+        #
+        # Found by running the adopt path rather than reading it.
+        state = {"height": last_height,
+                 "hash": last[::-1].hex() if last else None,
+                 "commitment": seed, "records": count}
+        derived_path = os.path.join(args.store, "derived.json")
+
+        # Carry the lifetime totals, do not reset them.
+        #
+        # adopt used to write a state with no totals at all, so the next
+        # block stripped started the counters from zero. On a store with
+        # 975,000 blocks already in it the dashboard then reported a few
+        # hundred megabytes removed, which looks exactly like a store that
+        # has been thrown away and rebuilt. Nothing was wrong with the
+        # store either time; only the arithmetic about it.
+        #
+        # Preference order: an existing state.json, because it is the
+        # running total; then derived.json, because the batch stripper
+        # measured the same thing when it built the store. If neither has
+        # them they stay absent rather than zero — a missing total reads
+        # as "not known", and zero reads as "nothing was removed".
+        _prior = load_state(args.store) or {}
+        _carried = None
+        for src, label in ((_prior, "state.json"), (None, "derived.json")):
+            if src is None:
+                try:
+                    with open(derived_path) as fh:
+                        src = json.load(fh)
+                except (OSError, ValueError):
+                    continue
+            if src.get("bytes_in") and src.get("bytes_out") is not None:
+                state["bytes_in"] = src["bytes_in"]
+                state["bytes_out"] = src["bytes_out"]
+                if src.get("carriers") is not None:
+                    state["carriers"] = src["carriers"]
+                _carried = label
+                break
+        if _carried:
+            _sv = state["bytes_in"] - state["bytes_out"]
+            print(f"\nlifetime totals carried from {_carried}: "
+                  f"{_sv / 1024 ** 3:.1f} GiB removed of "
+                  f"{state['bytes_in'] / 1024 ** 3:.1f} GiB "
+                  f"({100.0 * _sv / state['bytes_in']:.2f}%)")
+        else:
+            print("\nNo lifetime totals in state.json or derived.json, so")
+            print("the counters start from this adopt. The store itself is")
+            print("unaffected; only the 'spam removed' figure on the page")
+            print("will count from here rather than from genesis.")
+        try:
+            with open(derived_path) as fh:
+                derived = json.load(fh)
+        except (OSError, ValueError):
+            derived = None
+        if derived and derived.get("policy_id"):
+            if derived.get("records") not in (None, count):
+                print(f"\nWARNING: derived.json records "
+                      f"{derived['records']:,} but the store holds "
+                      f"{count:,}.")
+                print("The store has changed since it was derived. Not "
+                      "carrying its policy forward.")
+            else:
+                state["policy_id"] = derived["policy_id"]
+                print(f"policy carried from derived.json: "
+                      f"{derived['policy_id']}")
+        else:
+            print("\nNo derived.json with a policy beside this store, so no")
+            print("policy is recorded. If the stripper that built it is the")
+            print("one running now, say so with --adopt-policy; otherwise")
+            print("re-derive.")
+
+        save_state(args.store, state)
         print("adopted. state.json written.")
         return
 
     rpc = RPC(args.rpc_host, args.rpc_port, args.rpc_user, args.rpc_password,
               args.rpc_cookie)
+    # The policy is not optional in production. A store built without one
+    # cannot publish a policy_id, and a commitment without its ruleset is an
+    # unverifiable number.
+    try:
+        from carrier_policy import Policy
+        policy = Policy(op_return_limit=args.op_return_limit)
+        print("carrier policy %s" % policy.policy_id())
+    except ImportError as e:
+        sys.exit(f"carrier_policy.py is required beside monetary_daemon.py: {e}")
+
     d = Daemon(rpc, args.store, args.depth, args.op_return_limit,
-               args.scriptsig_limit, args.file_size, args.poll)
+               args.scriptsig_limit, args.file_size, args.poll, policy,
+               args.adopt_policy)
     if d.state["height"] is None and args.start_height is None:
         sys.exit("new store needs --start-height")
     try:

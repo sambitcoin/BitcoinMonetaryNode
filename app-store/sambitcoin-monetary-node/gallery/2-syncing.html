@@ -1,0 +1,233 @@
+<!doctype html><meta charset=utf-8><title>monetary node</title><style>
+*{box-sizing:border-box}
+body{background:#0d0e10;color:#e8e6e1;font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;padding:28px}
+.wrap{max-width:920px;margin:0 auto}
+h1{font-size:18px;color:#f7931a;margin:0 0 2px;letter-spacing:.04em}
+.sub{color:#8b8880;font-size:12px;margin-bottom:22px}
+.card{border:1px solid #23252a;background:#111216;padding:16px 18px;margin-bottom:14px}
+.card h2{font-size:11px;letter-spacing:.14em;color:#8b8880;margin:0 0 12px;font-weight:600}
+table{width:100%;border-collapse:collapse}
+td{padding:3px 0;vertical-align:top}
+td.k{color:#8b8880;width:200px;white-space:nowrap}
+td.v{color:#e8e6e1;word-break:break-all}
+.big{font-size:22px;color:#f7931a}
+.ok{color:#5cb85c}.warn{color:#f0ad4e}.bad{color:#d9534f}.dim{color:#8b8880}
+.hash{font-size:11.5px;color:#c9c6c0;word-break:break-all}
+.note{color:#8b8880;font-size:11.5px;margin-top:10px;line-height:1.55}
+pre.cfg{background:#0a0d0a;border:1px solid #1e2a1e;border-left:2px solid #2fbf4f;padding:9px 11px;margin:7px 0;color:#9fe8af;font-size:11px;line-height:1.5;overflow-x:auto;white-space:pre}
+.note code{color:#9fe8af;background:#0a0d0a;padding:0 3px}
+.donate{margin:26px auto 40px;max-width:520px;text-align:center;padding:16px 18px;border:1px solid #1e2a1e;background:#080b08}
+.dlabel{display:block;color:#5c6b5c;font-size:10px;letter-spacing:2px;margin-bottom:8px}
+.dln{display:inline-block;color:#2fbf4f;font-size:14px;text-decoration:none;border-bottom:1px dotted #2fbf4f;padding-bottom:2px;word-break:break-all}
+.dln:hover{color:#9fe8af;border-bottom-color:#9fe8af}
+.dnote{display:block;color:#5c6b5c;font-size:10.5px;margin-top:9px}
+.err{border-color:#d9534f}
+.torbad{border-color:#d9534f;background:#170f0f}
+.torok{border-color:#2a4a2a}
+.verdict{font-size:20px;letter-spacing:.06em}
+.bar{height:4px;background:#23252a;margin-top:8px}
+.bar>i{display:block;height:4px;background:#f7931a}
+/* the unified status bar — what is happening, before anything else */
+.sbar{border:1px solid #23252a;border-left:3px solid #8b8880;background:#111216;
+padding:12px 16px;margin:0 0 14px}
+.sbar.ok{border-left-color:#2fbf4f}
+.sbar.warn{border-left-color:#f0ad4e}
+.sbar.bad{border-left-color:#d9534f}
+.sbdoing{font-size:13.5px;color:#e8e6e1;display:flex;align-items:center;gap:9px}
+.sbdot{width:8px;height:8px;border-radius:50%;background:#8b8880;flex:0 0 8px}
+.sbar.ok .sbdot{background:#2fbf4f}
+/* amber pulses: something is in progress and the page is not stuck */
+.sbar.warn .sbdot{background:#f0ad4e;animation:sbp 1.6s ease-in-out infinite}
+.sbar.bad .sbdot{background:#d9534f}
+@keyframes sbp{0%,100%{opacity:1}50%{opacity:.25}}
+@media(prefers-reduced-motion:reduce){.sbar.warn .sbdot{animation:none}}
+.sbcells{display:flex;flex-wrap:wrap;gap:0 26px;margin-top:11px;
+padding-top:11px;border-top:1px solid #1b1d21}
+.sbcell{display:flex;flex-direction:column;gap:2px;min-width:92px}
+.sblabel{font-size:9.5px;letter-spacing:.13em;color:#6b6862}
+.sbval{font-size:14px;color:#f7931a}
+.sbval.ok{color:#5cb85c}.sbval.warn{color:#f0ad4e}.sbval.bad{color:#d9534f}
+@media(max-width:600px){.sbcells{gap:0 18px}.sbcell{min-width:76px}
+.sbval{font-size:12.5px}}
+/* the network banner — the loudest thing on the page, deliberately */
+.banner{border:2px solid;padding:18px 20px;margin:0 0 16px;text-align:center}
+.bword{font-size:40px;font-weight:700;letter-spacing:.12em;line-height:1.1}
+.bsub{font-size:12px;line-height:1.6;margin-top:10px;color:#b9b6b0}
+.banner code{background:#000;padding:1px 5px}
+.btor{border-color:#2fbf4f;background:#0b1a0d}
+.btor .bword{color:#2fbf4f}
+.bclear{border-color:#d9534f;background:#1e0d0d}
+.bclear .bword{color:#ff6b66}
+.unknown{border-color:#f0ad4e;background:#1c1609}
+.unknown .bword{color:#f0ad4e;font-size:28px}
+@media(max-width:600px){.bword{font-size:28px}}
+/* advanced settings panel */
+h3.sgroup{font-size:10px;letter-spacing:.16em;color:#f7931a;margin:20px 0 8px;
+font-weight:600;border-bottom:1px solid #23252a;padding-bottom:5px}
+.sgrid{display:block}
+.srow{display:grid;grid-template-columns:230px 150px 1fr;gap:12px;
+padding:9px 0;border-bottom:1px solid #191b1f;align-items:start}
+.srow.off{opacity:.45}
+.sname{color:#e8e6e1;font-size:12px}
+.skey{display:block;color:#6b6862;font-size:10.5px;margin-top:2px}
+.sval{display:flex;align-items:center;gap:6px}
+.unit{color:#6b6862;font-size:10.5px;white-space:nowrap}
+.shelp{color:#8b8880;font-size:11px;line-height:1.5}
+.sdef{color:#6b6862;font-size:10.5px}
+.chg{color:#f7931a;font-size:10.5px}
+.frozenval{color:#8b8880;font:12px ui-monospace,Menlo,monospace;
+background:#0b0c0e;border:1px dashed #23252a;padding:5px 8px;display:inline-block;
+min-width:90px}
+input.in{background:#08090b;border:1px solid #23252a;color:#e8e6e1;
+font:12px ui-monospace,Menlo,monospace;padding:6px 8px;width:100%}
+input.in:disabled{color:#5a5752;background:#0b0c0e}
+.switch{display:inline-block;position:relative;width:42px;height:22px}
+.switch input{opacity:0;width:0;height:0}
+.switch span{position:absolute;inset:0;background:#23252a;border:1px solid
+#2c2f35;transition:.15s;cursor:pointer}
+.switch span:before{content:"";position:absolute;width:16px;height:16px;
+left:2px;top:2px;background:#6b6862;transition:.15s}
+.switch input:checked+span{background:#1d3a1d;border-color:#2fbf4f}
+.switch input:checked+span:before{transform:translateX(20px);background:#2fbf4f}
+.switch input:disabled+span{opacity:.5;cursor:not-allowed}
+.sactions{display:flex;gap:10px;margin-top:20px;flex-wrap:wrap}
+button.go{background:#132013;border:1px solid #2fbf4f;color:#2fbf4f;
+font:11px ui-monospace,Menlo,monospace;letter-spacing:.14em;padding:10px 20px;
+cursor:pointer}
+button.go:hover{background:#1b2d1b}
+button.warnbtn{background:#1f1511;border-color:#f0ad4e;color:#f0ad4e}
+button.warnbtn:hover{background:#2a1c15}
+.note.good{color:#5cb85c}
+@media(max-width:700px){.srow{grid-template-columns:1fr}}
+pre.cfg{background:#08090b;border:1px solid #1c1e22;padding:10px 12px;margin:8px 0 0;font-size:11.5px;color:#b9b6b0;white-space:pre-wrap}
+#feed{background:#08090b;border:1px solid #1c1e22;height:400px;overflow:auto;font-size:11.5px;line-height:1.5}
+.ev{padding:4px 12px;border-bottom:1px solid #131519;display:flex;gap:10px}
+.ev .ts{color:#5f5d58;white-space:nowrap}
+.ev .tag{width:62px;flex:none;text-transform:uppercase;font-size:10px;letter-spacing:.07em;padding-top:1px}
+.ev .msg{flex:1;color:#d6d3cd}
+.ev .det{color:#8b8880}
+.ev.block .tag{color:#f7931a}
+.ev.store .tag{color:#5cb85c}
+.ev.mempool .tag{color:#6ba4d8}
+.ev.indexer .tag{color:#b58bd8}
+.ev.tick .tag{color:#4a4844}
+.ev.tick .msg{color:#8b8880}
+.ev.node .tag{color:#8b8880}
+.ev.error .tag,.ev.tor .tag{color:#d9534f}
+.ev.quip{background:#0c0f0c}
+.ev.quip .tag{color:#4a6b4a}
+.ev.quip .msg{color:#7d9b7d;font-style:italic}
+.ev.wallet{background:#15120a;border-left:2px solid #f7931a}
+.ev.wallet .tag,.ev.wallet .msg{color:#f5e6c8}
+.live{display:inline-block;width:7px;height:7px;border-radius:50%;background:#5cb85c;margin-right:6px}
+.live.off{background:#d9534f}
+.pt{width:100%;border-collapse:collapse;font-size:11.5px}
+.pt th{text-align:left;color:#5f5d58;font-weight:400;padding:0 10px 5px 0;border-bottom:1px solid #1c1e22}
+.pt td{padding:3px 10px 3px 0;color:#b9b6b0;white-space:nowrap}
+.pt td.a{color:#d6d3cd;max-width:230px;overflow:hidden;text-overflow:ellipsis}
+.pill{font-size:10px;border:1px solid #23252a;padding:0 5px;color:#8b8880}
+.pill.onion{color:#b58bd8;border-color:#3a2a46}
+.pill.clear{color:#d9534f;border-color:#4a2323}
+</style><div class=wrap><h1>MONETARY NODE</h1><div class=sub><span class=live id=live></span>live feed · cards refresh on reload · read only</div><div class='sbar warn'><div class=sbdoing><span class=sbdot></span><span id=lv-sb-doing>Downloading and verifying the chain</span></div><div class=sbcells><div class=sbcell><span class=sblabel>HEIGHT</span><span class='sbval ' id=lv-sb-height>412,003</span></div><div class=sbcell><span class=sblabel>CHAIN</span><span class='sbval ' id=lv-sb-pct>42.25%</span></div><div class=sbcell><span class=sblabel>INDEX</span><span class='sbval ' id=lv-sb-index>block 390,112</span></div><div class=sbcell><span class=sblabel>SPAM REMOVED</span><span class='sbval ' id=lv-sb-spam>7.5 GiB</span></div><div class=sbcell><span class=sblabel>ROUTE</span><span class='sbval ok' id=lv-sb-route>TOR + I2P</span></div><div class=sbcell><span class=sblabel>DISK FREE</span><span class='sbval ok' id=lv-sb-disk>420.0 GiB</span></div></div></div><div class=card><h2>NODE</h2><table><tr><td class=k>block height</td><td class=v><span class=big id=lv-height>412,003</span></td></tr><tr><td class=k>chain synced</td><td class=v><span class=warn id=lv-pct>42.25%</span> <span class=dim>of <span id=lv-headers>975,189</span></span></td></tr><tr><td class=k>spam removed</td><td class=v><span class=big id=lv-spam>7.5 GiB</span></td></tr><tr><td class=k>store vs blocks</td><td class=v>168.6 GiB from 177.0 GiB <span class=dim>(4.74% smaller)</span></td></tr><tr><td class=k>stripped to</td><td class=v><span id=lv-store>411,900</span></td></tr></table></div><div class=card><h2>FEED</h2><div id=feed></div><div class=note>Blocks with fees, mempool movement, the daemon advancing, indexer state, Tor warnings, and this node's own wallet transactions highlighted. A heartbeat every 15s carries mempool size, fee estimate and tip age so a quiet chain never looks like a broken page. Individual mempool transactions are excluded.</div></div><div class=card><h2>STRIPPED</h2><table></table></div><div class=card><h2>SYNC</h2><div class=k style='margin-bottom:4px'>Blockchain <span class=dim>— Bitcoin Core downloading and validating</span></div><div style='height:14px;border:1px solid #3a3d44;background:#15171a;border-radius:2px;overflow:hidden'><div id=lv-bar-node style='height:100%;width:42.2%;background:#f7931a;transition:width .4s linear'></div></div><div class=dim style='margin:6px 0 14px' id=lv-txt-node><b>42.25%</b> · block 412,003 of 975,189 · <span class=dim>measuring…</span></div><div class=k style='margin-bottom:4px'>Address index <span class=dim>— what your wallet queries</span></div><div style='height:14px;border:1px solid #3a3d44;background:#15171a;border-radius:2px;overflow:hidden'><div id=lv-bar-index style='height:100%;width:94.7%;background:#4ea1f7;transition:width .4s linear'></div></div><div class=dim style='margin-top:6px' id=lv-txt-index><b>94.69%</b> · block 390,112 of 412,003 · <span class=dim>measuring…</span></div><div class=note><b>Building the index for the first time.</b> It reads every block before it will answer a wallet, so nothing can connect yet. The node is validating and stripping normally throughout.</div></div><div class=card><h2>CONNECT A WALLET</h2><table><tr><td class=k>status</td><td class=v><span class=warn>still indexing — connect anyway, your balance will fill in</span></td></tr><tr><td class=k>server</td><td class=v><code>this node&#x27;s address:50001</code></td></tr></table><div class=note><b>Sparrow:</b> Preferences → Server → Private Electrum → URL <code>this node&#x27;s address</code>, port <code>50001</code>, SSL off.<br><b>Electrum:</b> Tools → Network → Server → <code>this node&#x27;s address:50001:t</code>.<br><br>Your wallet asks about its own addresses and nothing else is shared. This node never asks for an extended public key, a seed, or anything that could spend.</div></div><div class=card><h2>ADDRESS INDEX</h2><div class=warn style='font-size:15px;margin-bottom:4px'>Building the index — 94.7% done.</div><div class=dim style='margin-bottom:12px'>Block 390,112 of 412,003. Wallets cannot connect until this finishes.</div><div style='height:14px;border:1px solid #3a3d44;background:#15171a;border-radius:2px;overflow:hidden'><div style='height:100%;width:94.7%;background:#4ea1f7;transition:width .4s linear'></div></div><div style='height:10px'></div><table style='margin-top:10px'><tr><td class=k>on disk</td><td class=v><span class=dim>nothing written yet</span></td></tr></table><div class=note>Switch it on or off in SETTINGS below.</div></div>
+<script>
+(function(){
+  // Update in place rather than reloading. A full reload every few
+  // seconds would re-read the store size, the logs and the config on a
+  // Raspberry Pi, to move two numbers.
+  var fmt = function(n){
+    if (n === null || n === undefined) return '—';
+    return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  };
+  var set = function(id, text){
+    var e = document.getElementById(id);
+    if (e && text !== null && text !== undefined) e.textContent = text;
+  };
+  // Swap the value class without touching the label's.
+  var cls = function(id, c){
+    var e = document.getElementById(id);
+    if (e && c !== null && c !== undefined) e.className = 'sbval '+c;
+  };
+  var width = function(id, p){
+    var e = document.getElementById(id);
+    if (e && p !== null && p !== undefined) e.style.width = p.toFixed(1)+'%';
+  };
+  var last = null;
+  var tick = function(){
+    fetch('/live.json', {cache:'no-store'}).then(function(r){
+      return r.json();
+    }).then(function(d){
+      set('lv-height', fmt(d.height));
+      set('lv-headers', fmt(d.headers));
+      set('lv-store', fmt(d.store_height));
+      if (d.spam) set('lv-spam', d.spam);
+      if (d.node_pct !== null && d.node_pct !== undefined)
+        set('lv-pct', d.node_pct.toFixed(2)+'%');
+      width('lv-bar-node', d.node_pct);
+      width('lv-bar-index', d.index_pct);
+      var moved = (last !== null && d.height !== null && d.height > last);
+      if (d.node_pct !== null && d.node_pct !== undefined) {
+        set('lv-txt-node',
+            d.node_pct.toFixed(2)+'%  ·  block '+fmt(d.height)+
+            ' of '+fmt(d.headers)+
+            (moved ? '  ·  +'+fmt(d.height-last) : ''));
+      }
+      if (d.index !== null && d.index !== undefined &&
+          d.index_pct !== null && d.index_pct !== undefined) {
+        set('lv-txt-index',
+            d.index_pct.toFixed(2)+'%  ·  block '+fmt(d.index)+
+            ' of '+fmt(d.height));
+      }
+      // --- the unified status bar
+      set('lv-sb-doing', d.doing);
+      set('lv-sb-height', fmt(d.height));
+      set('lv-sb-pct', (d.node_pct === null || d.node_pct === undefined)
+                       ? '\u2014' : d.node_pct.toFixed(2)+'%');
+      set('lv-sb-index', !d.index_enabled ? 'off'
+          : ((d.index === null || d.index === undefined) ? 'starting'
+             : 'block '+fmt(d.index)));
+      if (d.spam) set('lv-sb-spam', d.spam);
+      set('lv-sb-route', d.route);
+      if (d.free) set('lv-sb-disk', d.free);
+      // The colour is part of the reading, so it has to move with the
+      // text. A bar that stays green while the words say STOPPED is
+      // worse than a bar with no colour at all.
+      var bar = document.querySelector('.sbar');
+      if (bar && d.doing_class) bar.className = 'sbar '+d.doing_class;
+      cls('lv-sb-route', d.route_class);
+      cls('lv-sb-disk', (d.free_bytes === null || d.free_bytes === undefined)
+          ? '' : (d.free_bytes < 20*1073741824 ? 'bad'
+                  : (d.free_bytes < 80*1073741824 ? 'warn' : 'ok')));
+      last = d.height;
+    }).catch(function(){ /* a missed poll is not an error */ });
+  };
+  tick();
+  setInterval(tick, 5000);
+})();
+</script>
+<div class=donate><span class=dlabel>SUPPORT THIS PROJECT</span><a class=dln href="lightning:bluejays93@strike.me">bluejays93@strike.me</a><span class=dnote>lightning</span></div><script>
+(function(){
+ var last=0,box=document.getElementById('feed'),dot=document.getElementById('live');
+ function row(e){
+  var d=document.createElement('div');
+  d.className='ev '+e.kind+(e.important?' wallet':'');
+  var a=document.createElement('span');a.className='ts';
+  a.textContent=new Date(e.t*1000).toISOString().substr(11,8);
+  var b=document.createElement('span');b.className='tag';b.textContent=e.kind;
+  var c=document.createElement('span');c.className='msg';c.textContent=e.text;
+  if(e.detail){var s=document.createElement('span');s.className='det';
+   s.textContent='  '+e.detail;c.appendChild(s);}
+  d.appendChild(a);d.appendChild(b);d.appendChild(c);return d;
+ }
+ function poll(){
+  fetch('/events.json?since='+last).then(function(r){return r.json();})
+  .then(function(j){
+    dot.className='live';
+    (j.events||[]).forEach(function(e){
+      if(e.id>last){last=e.id;box.insertBefore(row(e),box.firstChild);}
+    });
+    while(box.childNodes.length>250){box.removeChild(box.lastChild);}
+  }).catch(function(){dot.className='live off';});
+ }
+ poll();setInterval(poll,2000);
+})();
+</script>

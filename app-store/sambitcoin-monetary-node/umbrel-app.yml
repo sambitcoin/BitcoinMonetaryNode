@@ -1,0 +1,154 @@
+manifestVersion: 1
+id: sambitcoin-monetary-node
+category: bitcoin
+name: Monetary Node
+version: "0.1.0-alpha"
+tagline: A full Bitcoin node that stores the chain without the data carriers
+description: >-
+  A Bitcoin node that validates every consensus rule, then stores the blocks
+  with the data carriers removed.
+
+
+  A block's merkle root commits to transaction IDs, not to transaction data.
+  Keep the 32-byte txid of every transaction you modify or discard and the
+  block still verifies against the proof-of-work in its own header. Nothing
+  is forked, nothing is confiscated, and no permission is required.
+
+
+  Everything is in this one app: Bitcoin Core for consensus, Tor, the
+  stripper, an address index, and a dashboard. There is nothing else to
+  install and no other app to configure. Bitcoin Core is embedded
+  unmodified and is never reimplemented — validation is its job, and
+  writing your own is how you build something that accepts a block Bitcoin
+  rejects.
+
+
+  YOUR WALLET. The app runs its own address index, so Sparrow or Electrum
+  connect to it the way they connect to any Electrum server: point them at
+  this machine on port 50001. You are never asked for an extended public
+  key, a seed, or anything that could spend. Your balance is then computed
+  from blocks that never held an inscription payload.
+
+
+  That port is on your local network and is not password-protected, which
+  is how home Electrum servers normally work. Anyone already on your
+  network can query it.
+
+
+  ⚠️ DISK: 2 TB RECOMMENDED, 1.5 TB MINIMUM. This is the number most
+  people get wrong, so it is worth being exact. The node keeps the whole
+  blockchain AND a monetary store derived from it, because the address
+  index refuses to run against a pruned node. Budget roughly 740 GB of
+  chain, 700 GB of store and 80 GB of index. The app measures free space
+  before it starts anything and REFUSES to run if it will not fit —
+  filling the disk would take down every other app on your machine, not
+  just this one.
+
+
+  If that does not fit, turn the address index off in the app's settings.
+  The node then reclaims blocks behind the stripper and costs about one
+  chain instead of two — but no wallet can connect to it, and it becomes
+  a validator and an archive rather than something you can spend from.
+
+
+  ⚠️ FIRST RUN TAKES DAYS. Bitcoin Core downloads and validates the entire
+  chain over Tor, then the stripper reads it, then the index is built. On
+  a Raspberry Pi expect several days before a wallet can connect. The
+  dashboard shows which stage it is in and how far along, and nothing is
+  stripped until the chain is in.
+
+
+  ⚠️ ALPHA. No promises and no roadmap. This is unreviewed software
+  written by one person, and it may stop working at any time. It runs its
+  own Bitcoin Core, Tor and address index and writes the bitcoin.conf for
+  them. It never touches your wallet or your keys. Four independent code
+  reviews have been run against it and every one found real bugs — the
+  fixes and the retractions are in the repository's corrections table,
+  which is worth reading before you install.
+
+
+  WHAT IT HAS NOT DONE. The component that deletes blocks behind the
+  stripper has never run in a release configuration, because the address
+  index forces pruning off. It ships disabled. Treat any claim about
+  reclaiming disk as untested.
+
+
+  Installing this app onto an empty disk and letting it build everything
+  from genesis on mainnet has NEVER been tested end to end. That exact
+  path has been run on signet, which is the same code against a small
+  chain, and mainnet has been run from a data directory copied in from
+  another machine. Both of those work. The combination a new installer
+  gets — empty disk, mainnet, days of unattended work — you would be the
+  first to run.
+
+
+  It has run on a Raspberry Pi and on x86. The Pi filled its own disk
+  during a rebuild and had to be power-cycled, which is what the disk
+  watchdog in this release exists to prevent. That watchdog has not yet
+  been through a real disk-full event. Give it room rather than trusting
+  it.
+
+
+  WHAT IT CANNOT DO: serve a stripped block to an ordinary Bitcoin node.
+  Monetary nodes can serve each other and nobody else, and once blocks
+  are reclaimed the witness data for modified transactions is gone
+  permanently.
+developer: Neal Sampat
+website: https://github.com/sambitcoin/BitcoinMonetaryNode
+dependencies: []
+repo: https://github.com/sambitcoin/BitcoinMonetaryNode
+support: https://github.com/sambitcoin/BitcoinMonetaryNode/issues
+port: 3570
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
+submitter: sambitcoin
+submission: ""
+releaseNotes: >-
+  First alpha. Read "WHAT IT HAS NOT DONE" above before you install: the
+  empty-disk mainnet install has never been run by anyone, including the
+  author.
+
+
+  This release adds a running disk watchdog. It stops Bitcoin Core at 20
+  GiB free rather than letting the drive fill, deletes nothing, and
+  restarts on its own when space comes back. It exists because the
+  previous build filled a Raspberry Pi's disk and took the machine down
+  with it — the startup space check had already approved that node, which
+  is the point: checking once is not checking.
+
+
+  Measured genesis to height 970,000 on a laptop: 970,001 blocks
+  re-verified reading nothing but the filtered store, zero failures, and
+  each record shown to extend the one before it. 36.6 GiB of carriers
+  removed. 720.3 GiB of blocks became a 674.7 GiB store — a 6.33% saving,
+  which is the honest figure and smaller than people expect. 91.79% of
+  1.45 billion transactions are stored completely untouched.
+
+
+  Four code reviews happened before this release and all four found real
+  bugs. The ones that changed published figures:
+
+
+  Contract witness data was being destroyed. The inscription detector
+  matched the shape of an envelope — a push, then OP_IF, then data — which
+  is also the shape of a Lightning HTLC. Those transactions lost their
+  entire witness. 14.5 GiB counted as "spam removed" was contract
+  signatures, about 28% of the published figure. Detection now requires
+  the ordinals protocol tag, with regression tests built from real BOLT 3
+  scripts.
+
+
+  Oversized scriptSig was counted as removed and then copied into the
+  store verbatim. A saving that never happened. It is now actually
+  removed.
+
+
+  The retention policy and the published policy identifier came from
+  different code, so the identifier described rules that had never run.
+  They are now one source, and a store records the policy that built it.
+
+
+  Commitments were computed over the block hash a record claimed rather
+  than the one recomputed from its header.

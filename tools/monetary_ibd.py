@@ -504,10 +504,23 @@ class Client:
         """Returns (ok, reason). Verifies fully before accepting."""
         try:
             p = parse_record(rec)
-        except (ValueError, IndexError, struct.error, OverflowError,
-                MemoryError) as e:
+        except Exception as e:
             # Every byte here came from an untrusted peer. A malformed record
-            # must be a rejection, never an exception that takes the node down.
+            # must be a rejection, never an exception that takes the node
+            # down.
+            #
+            # This caught an explicit tuple — ValueError, IndexError,
+            # struct.error, OverflowError, MemoryError — and a review found
+            # TypeError missing from it. Enumerating exception types for
+            # input an attacker chooses is the wrong shape of defence: the
+            # whole point is that you cannot predict what they will send. One
+            # type I failed to list is one crash they get for free.
+            #
+            # The cost of catching broadly is that a genuine bug in
+            # parse_record reads as a rejected record instead of failing
+            # loudly. The type name is in the message so it is still visible,
+            # and parse_record has its own tests where exceptions are not
+            # swallowed.
             return False, f"malformed record: {type(e).__name__}: {e}"
 
         ok, why = self.chain.accept(p["header"], self.check_difficulty)

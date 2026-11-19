@@ -1,0 +1,77 @@
+version: "3.7"
+
+# Monetary Node for umbrelOS.
+#
+# One container, one app, no dependencies. It runs its own Bitcoin Core,
+# its own Tor, its own address index and the stripper that is the point of
+# the project, supervised as one process tree.
+#
+# It used to depend on the Bitcoin app and read its blocks. That was less
+# code and a worse app: the user had to install and sync a second thing
+# first, the two could disagree about pruning, and on a machine running
+# Bitcoin Knots rather than Bitcoin the dependency silently went unmet.
+#
+# WHAT RUNS INSIDE
+#
+#   tor        so the node has no clearnet route unless asked for one
+#   bitcoind   consensus. Embedded, unmodified, never reimplemented.
+#   daemon     reads validated blocks, stores them without the carriers
+#   pruner     deletes blocks ONLY below both the stripper and the index
+#   electrs    the address index wallets query
+#   dashboard  this app's web page
+#
+# The supervisor starts them in that order and restarts what dies.
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: $APP_MONETARY_NODE_IP
+      APP_PORT: 8080
+
+  web:
+    # Pin the digest before submitting. A tag can be moved under you; a
+    # digest cannot, and Umbrel requires one.
+    image: ghcr.io/sambitcoin/monetary-node:0.1.0-alpha
+    restart: on-failure
+    # The stripper must finish the block it is on. Docker's default 10s
+    # SIGKILL would cut a record in half; the daemon handles SIGINT
+    # between blocks.
+    stop_grace_period: 5m
+    command: ["all"]
+    environment:
+      MONETARY_DATA_DIR: /data
+      MONETARY_TOR: "1"
+      # OFF in the shipped app, and the listing says so.
+      #
+      # Not a preference: the address index refuses to run against a
+      # pruned node, so with the index on this would never take effect
+      # anyway. But prune_behind.py is the one component that DELETES
+      # data, and it has never run in this configuration. Shipping an
+      # untested destructive component switched on, to strangers, is not
+      # a thing to do for the sake of a tidier default.
+      MONETARY_PRUNE: "0"
+      MONETARY_INDEX: "1"
+      # Genesis. The node prunes bitcoind's blocks behind the stripper, so
+      # the whole history costs about what the chain costs rather than
+      # twice it. Raise this on a disk that cannot hold it; it only
+      # matters before the first run.
+      MONETARY_START_HEIGHT: "0"
+      MONETARY_DEPTH: "6"
+      # What the dashboard tells people to type into Sparrow.
+      MONETARY_WALLET_ADVERTISE: "umbrel.local:50001"
+    ports:
+      # Electrum protocol, for Sparrow and Electrum on the LAN. This
+      # cannot go behind app_proxy: that speaks HTTP, and Electrum is
+      # line-delimited JSON over raw TCP.
+      #
+      # It is therefore unauthenticated on the local network, which is the
+      # same footing as every home Electrum server. Said plainly in the
+      # app description rather than left to be discovered.
+      - "50001:50001"
+    volumes:
+      # Everything lives here: the chain, the store, the index, tor's
+      # state. One directory to back up, one to delete.
+      - "${APP_DATA_DIR}/data:/data"
+    networks:
+      default:
+        ipv4_address: $APP_MONETARY_NODE_IP

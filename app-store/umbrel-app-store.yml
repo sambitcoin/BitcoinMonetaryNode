@@ -1,0 +1,9 @@
+# The community app store manifest.
+#
+# `id` is the store's own identifier AND the required prefix for every
+# app id inside it. umbrelOS rejects an app whose id does not start with
+# it, which is why the app directory here is sambitcoin-monetary-node
+# rather than monetary-node — the directory name, the id in its
+# umbrel-app.yml, and this prefix all have to agree.
+id: sambitcoin
+name: Sambitcoin
